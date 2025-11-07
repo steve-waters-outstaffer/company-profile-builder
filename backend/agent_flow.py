@@ -70,7 +70,7 @@ tavily_tool = TavilySearch(max_results=3, api_key=config.TAVILY_API_KEY)
 
 # --- 4. Define the Agent's Nodes (The "Functions") ---
 
-llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_NAME, google_api_key=config.GOOGLE_API_KEY)
+llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_NAME)
 
 def start_node(state: AgentState):
     """Parses the initial input to kick off the flow."""
