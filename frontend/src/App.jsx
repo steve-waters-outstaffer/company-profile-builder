@@ -15,7 +15,7 @@ function App() {
     setError(null);
 
     try {
-      const response = await fetch('http://127.0.0.1:5000/research', {
+      const response = await fetch('https://company-researcher-373126702591.us-central1.run.app/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // Send both fields - backend will use whichever are provided

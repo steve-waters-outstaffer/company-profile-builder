@@ -7,7 +7,11 @@ import config
 app = Flask(__name__)
 # CRITICAL: Allow requests from your React app's origin
 # Vite runs on 5173 by default, not 3000.
-CORS(app, resources={r"/research": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
+CORS(app, resources={r"/research": {"origins": [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://gen-lang-client-0048564118.web.app" # <-- ADD THIS LINE
+]}})
 
 # Compile the agent graph once on startup
 app.config['AGENT_GRAPH'] = get_research_graph()

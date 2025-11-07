@@ -8,3 +8,4 @@ langgraph
 tavily-python
 requests
 pydantic
+gunicorn
