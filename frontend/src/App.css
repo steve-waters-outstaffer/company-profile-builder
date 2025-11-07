@@ -157,3 +157,48 @@ a {
 a:hover {
   text-decoration: underline;
 }
+
+/* --- New Step Tracker Styles --- */
+.steps-container {
+  background: #fdfdfd;
+  border: 1px solid #eee;
+  padding: 20px;
+  border-radius: 8px;
+  margin-top: 30px;
+}
+
+.steps-container h3 {
+  margin-top: 0;
+  color: #333;
+}
+
+.step-item {
+  font-size: 16px;
+  color: #888;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  transition: all 0.3s ease;
+}
+
+.step-item:last-child {
+  margin-bottom: 0;
+}
+
+.step-item .step-icon {
+  margin-right: 12px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* State: Current */
+.step-item.step-current {
+  color: #222;
+  font-weight: bold;
+}
+
+/* State: Complete */
+.step-item.step-complete {
+  color: #1a9c20;
+  font-weight: bold;
+}

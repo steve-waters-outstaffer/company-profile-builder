@@ -9,3 +9,5 @@ tavily-python
 requests
 pydantic
 gunicorn
+google-cloud-firestore  # <-- ADD THIS
+google-cloud-tasks      # <-- ADD THIS
