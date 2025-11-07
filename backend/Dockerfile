@@ -18,4 +18,4 @@ ENV PORT 8080
 # This tells gunicorn to listen on all interfaces (0.0.0.0)
 # on the port Cloud Run provides, and to find the 'app' object
 # inside the 'app.py' file.
-CMD exec gunicorn --bind 0.0.0.0:$PORT app:app
+CMD exec gunicorn --bind 0.0.0.0:$PORT --timeout 300 app:app

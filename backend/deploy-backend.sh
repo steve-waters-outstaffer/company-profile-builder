@@ -17,6 +17,7 @@ gcloud run deploy $SERVICE_NAME \
   --region=$REGION \
   --allow-unauthenticated \
   --project=$PROJECT_ID \
+  --memory=1Gi \
   --set-secrets=TAVILY_API_KEY=TAVILY_API_KEY:latest \
   --set-secrets=SCRAPECREATORS_API_KEY=SCRAPECREATORS_API_KEY:latest \
   --set-secrets=GOOGLE_API_KEY=GOOGLE_API_KEY:latest
