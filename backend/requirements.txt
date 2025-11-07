@@ -1,0 +1,10 @@
+flask
+flask-cors
+langchain
+langchain-google-genai
+langchain-community
+langchain-tavily
+langgraph
+tavily-python
+requests
+pydantic
