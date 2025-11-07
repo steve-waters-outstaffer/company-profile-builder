@@ -3,6 +3,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from agent_flow import get_research_graph
 import config
+import datetime
 
 app = Flask(__name__)
 # CRITICAL: Allow requests from your React app's origin
@@ -19,9 +20,14 @@ app.config['AGENT_GRAPH'] = get_research_graph()
 @app.route('/research', methods=['POST'])
 def research_company():
     try:
+        start_time = datetime.datetime.now()
+        print(f"[TRACE] {start_time.isoformat()}: --- REQUEST START ---")
+
         data = request.json
         user_input = data.get('input')
         url_input = data.get('url')
+
+        print(f"[TRACE] {datetime.datetime.now().isoformat()}: Input: {user_input}, URL: {url_input}")
 
         if not user_input:
             return jsonify({"error": "No company name provided"}), 400
@@ -44,12 +50,16 @@ def research_company():
         
         # Check if the report is a Pydantic model and convert
         if hasattr(final_report_data, 'dict'):
-             final_report_data = final_report_data.dict()
-        
+            final_report_data = final_report_data.dict()
+
+        end_time = datetime.datetime.now()
+        print(f"[TRACE] {end_time.isoformat()}: --- REQUEST SUCCESS --- Duration: {end_time - start_time}")
+
         return jsonify(final_report_data)
 
     except Exception as e:
-        print(f"Error during research: {e}") # Added for debugging
+        err_time = datetime.datetime.now()
+        print(f"[TRACE] {err_time.isoformat()}: --- REQUEST FAILED --- Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
