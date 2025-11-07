@@ -22,7 +22,8 @@ const ALL_STEPS = [
   { id: 'start', label: 'Starting research...' },
   { id: 'find_linkedin_url', label: 'Finding LinkedIn Profile' },
   { id: 'scrape_linkedin', label: 'Scraping LinkedIn Data' },
-  { id: 'find_jobs_and_news', label: 'Searching for Jobs & News' },
+  { id: 'find_jobs_and_news', label: 'Finding Careers Page & News' },
+  { id: 'scrape_careers_page', label: 'Scraping Careers Page' },
   { id: 'generate_final_report', label: 'Generating Final Report' }
 ];
 
@@ -59,9 +60,18 @@ function App() {
         setCompletedSteps(data.steps_complete || []);
 
         if (data.status === 'complete') {
-          setReportData(data.final_report);
+          // Combine LinkedIn data with LLM-generated fields
+          const combinedReport = {
+            // All LinkedIn data
+            ...data.linkedin_data,
+            // LLM-generated fields
+            job_openings: data.job_openings || [],
+            recent_news_summary: data.recent_news_summary || ''
+          };
+          
+          setReportData(combinedReport);
           localStorage.removeItem('research_job_id');
-          setJobId(null);
+          // Keep jobId so report stays visible
         } else if (data.status === 'error') {
           setError(data.error);
           localStorage.removeItem('research_job_id');
@@ -79,6 +89,7 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setJobId(null); // Clear old job first
     setReportData(null);
     setError(null);
     setCompletedSteps([]);
@@ -154,16 +165,23 @@ function App() {
 
       {reportData && (
         <div className="report">
-          <h2>{reportData.company_name}</h2>
+          {reportData.logo && (
+            <div className="company-header">
+              <img src={reportData.logo} alt={`${reportData.name} logo`} className="company-logo" />
+              <h2>{reportData.name}</h2>
+            </div>
+          )}
+          {!reportData.logo && <h2>{reportData.name}</h2>}
 
           <div className="report-section">
             <h3>Basic Info</h3>
             <p><strong>Website:</strong> <a href={reportData.website} target="_blank" rel="noopener noreferrer">{reportData.website}</a></p>
-            <p><strong>LinkedIn:</strong> <a href={reportData.linkedin_url} target="_blank" rel="noopener noreferrer">{reportData.linkedin_url}</a></p>
+            <p><strong>LinkedIn:</strong> <a href={reportData.url} target="_blank" rel="noopener noreferrer">{reportData.url}</a></p>
             <p><strong>Industry:</strong> {reportData.industry}</p>
-            <p><strong>Size:</strong> {reportData.company_size_bracket} ({reportData.employee_count} employees)</p>
-            <p><strong>Founded:</strong> {reportData.founded_year}</p>
+            <p><strong>Size:</strong> {reportData.size} ({reportData.employeeCount} employees)</p>
+            <p><strong>Founded:</strong> {reportData.founded}</p>
             <p><strong>Headquarters:</strong> {reportData.headquarters}</p>
+            {reportData.type && <p><strong>Type:</strong> {reportData.type}</p>}
             <p><strong>Followers:</strong> {reportData.followers?.toLocaleString()}</p>
           </div>
 
@@ -183,12 +201,15 @@ function App() {
             </div>
           )}
 
-          {reportData.competitors && reportData.competitors.length > 0 && (
+          {reportData.similarPages && reportData.similarPages.length > 0 && (
             <div className="report-section">
               <h3>Competitors</h3>
-              <ul>
-                {reportData.competitors.map((comp, idx) => (
-                  <li key={idx}>{comp}</li>
+              <ul className="competitors-list">
+                {reportData.similarPages.map((comp, idx) => (
+                  <li key={idx}>
+                    {comp.image && <img src={comp.image} alt={comp.name} className="competitor-logo" />}
+                    <a href={comp.link} target="_blank" rel="noopener noreferrer">{comp.name}</a>
+                  </li>
                 ))}
               </ul>
             </div>
@@ -208,25 +229,29 @@ function App() {
             </div>
           )}
 
-          {reportData.key_personnel && reportData.key_personnel.length > 0 && (
+          {reportData.employees && reportData.employees.length > 0 && (
             <div className="report-section">
               <h3>Key Personnel</h3>
-              <ul>
-                {reportData.key_personnel.map((person, idx) => (
+              <ul className="personnel-list">
+                {reportData.employees.map((person, idx) => (
                   <li key={idx}>
-                    <a href={person.link} target="_blank" rel="noopener noreferrer">{person.name}</a> - {person.title}
+                    {person.image && <img src={person.image} alt={person.name} className="person-avatar" />}
+                    <div className="person-info">
+                      <a href={person.link} target="_blank" rel="noopener noreferrer">{person.name}</a>
+                      {person.title && <span> - {person.title}</span>}
+                    </div>
                   </li>
                 ))}
               </ul>
             </div>
           )}
 
-          {reportData.funding && (
+          {reportData.funding && reportData.funding.lastRound && reportData.funding.lastRound.type && (
             <div className="report-section">
               <h3>Latest Funding</h3>
-              <p><strong>Type:</strong> {reportData.funding.type}</p>
-              <p><strong>Date:</strong> {reportData.funding.date}</p>
-              <p><strong>Amount:</strong> {reportData.funding.amount}</p>
+              <p><strong>Type:</strong> {reportData.funding.lastRound.type}</p>
+              {reportData.funding.lastRound.date && <p><strong>Date:</strong> {reportData.funding.lastRound.date}</p>}
+              {reportData.funding.lastRound.amount && <p><strong>Amount:</strong> {reportData.funding.lastRound.amount}</p>}
             </div>
           )}
 
@@ -234,6 +259,21 @@ function App() {
             <div className="report-section">
               <h3>Recent News</h3>
               <p>{reportData.recent_news_summary}</p>
+            </div>
+          )}
+
+          {reportData.posts && reportData.posts.length > 0 && (
+            <div className="report-section">
+              <h3>Recent LinkedIn Posts</h3>
+              <div className="posts-list">
+                {reportData.posts.slice(0, 5).map((post, idx) => (
+                  <div key={idx} className="post-item">
+                    <p className="post-date">{new Date(post.datePublished).toLocaleDateString()}</p>
+                    <p className="post-text">{post.text.substring(0, 200)}{post.text.length > 200 ? '...' : ''}</p>
+                    <a href={post.url} target="_blank" rel="noopener noreferrer">Read more</a>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

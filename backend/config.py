@@ -5,6 +5,7 @@ import os
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 SCRAPECREATORS_API_KEY = os.environ.get("SCRAPECREATORS_API_KEY")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY")
 
 # --- AI Model ---
 # This is the variable you can easily swap

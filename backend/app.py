@@ -56,7 +56,9 @@ def start_research():
             "input": user_input,
             "url": url_input,
             "steps_complete": [],
-            "final_report": None,
+            "linkedin_data": None,
+            "job_openings": None,
+            "recent_news_summary": None,
             "error": None,
             "created_at": firestore.SERVER_TIMESTAMP
         }
@@ -118,7 +120,7 @@ def run_research_job():
 
         # Use .stream() instead of .invoke()
         steps_complete = []
-        final_report_data = None
+        final_state = None
 
         for step in graph.stream(inputs):
             # The key is the name of the node that just ran
@@ -131,16 +133,32 @@ def run_research_job():
                 "steps_complete": steps_complete
             })
 
-            # Check if this is the final step
-            if step_name == "generate_final_report":
-                final_report_data = step[step_name].get("final_report")
+            # Capture the final state
+            final_state = step[step_name]
 
-        # 3. Mark job as complete with the final data
-        job_ref.update({
+        # 3. Mark job as complete with the new structure
+        # Save LinkedIn data as-is, and LLM-generated fields separately
+        update_data = {
             "status": "complete",
-            "final_report": final_report_data,
             "completed_at": firestore.SERVER_TIMESTAMP
-        })
+        }
+        
+        # Save main data
+        if final_state:
+            if 'linkedin_data' in final_state:
+                update_data['linkedin_data'] = final_state['linkedin_data']
+            if 'job_openings' in final_state:
+                update_data['job_openings'] = final_state['job_openings']
+            if 'recent_news_summary' in final_state:
+                update_data['recent_news_summary'] = final_state['recent_news_summary']
+            
+            # Optional: Save raw debug data
+            if 'careers_page_content' in final_state:
+                update_data['raw_careers_markdown'] = final_state['careers_page_content']
+            if 'recent_news' in final_state:
+                update_data['raw_news_data'] = final_state['recent_news']
+        
+        job_ref.update(update_data)
 
         print(f"[TRACE] Job complete: {job_id}")
         return "Job completed successfully", 200
