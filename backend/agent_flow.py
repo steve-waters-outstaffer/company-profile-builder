@@ -1,13 +1,13 @@
 # agent_flow.py
 import config
 import datetime
+import requests
 from typing import List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, END
 from tools import scrape_linkedin_company
-from firecrawl import FirecrawlApp
 
 # --- 1. Define Only What LLM Needs to Generate ---
 
@@ -39,7 +39,6 @@ class AgentState(TypedDict, total=False):
 # --- 3. Define the Agent's Tools ---
 
 tavily_tool = TavilySearch(max_results=3, api_key=config.TAVILY_API_KEY)
-firecrawl_app = FirecrawlApp(api_key=config.FIRECRAWL_API_KEY)
 
 # --- 4. Define the Agent's Nodes ---
 
@@ -127,7 +126,7 @@ def find_jobs_and_news_node(state: AgentState):
     return state
 
 def scrape_careers_page_node(state: AgentState):
-    """Scrapes the full careers page content using Firecrawl."""
+    """Scrapes the full careers page content using Firecrawl v2 API."""
     print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: scrape_careers_page_node")
     
     if not state.get('careers_page_url'):
@@ -137,13 +136,26 @@ def scrape_careers_page_node(state: AgentState):
     
     try:
         print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking Firecrawl to scrape {state['careers_page_url']}...")
-        scrape_result = firecrawl_app.scrape_url(
-            state['careers_page_url'],
-            params={'formats': ['markdown']}
-        )
+        
+        url = "https://api.firecrawl.dev/v2/scrape"
+        payload = {
+            "url": state['careers_page_url'],
+            "onlyMainContent": True,
+            "formats": ["markdown"]
+        }
+        headers = {
+            "Authorization": f"Bearer {config.FIRECRAWL_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        
         print(f"[TRACE] {datetime.datetime.now().isoformat()}: Firecrawl scrape complete.")
         
-        state['careers_page_content'] = scrape_result.get('markdown', '')
+        # v2 API returns data.markdown
+        state['careers_page_content'] = result.get('data', {}).get('markdown', '')
         print(f"[TRACE] {datetime.datetime.now().isoformat()}: Extracted {len(state['careers_page_content'])} characters of careers page content.")
         
     except Exception as e:

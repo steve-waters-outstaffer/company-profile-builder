@@ -41,6 +41,7 @@ gcloud run deploy $SERVICE_NAME \
   --set-secrets=TAVILY_API_KEY=TAVILY_API_KEY:latest \
   --set-secrets=SCRAPECREATORS_API_KEY=SCRAPECREATORS_API_KEY:latest \
   --set-secrets=GOOGLE_API_KEY=GOOGLE_API_KEY:latest \
+  --set-secrets=FIRECRAWL_API_KEY=FIRECRAWL_API_KEY:latest \
   --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID \
   --set-env-vars=CLOUD_RUN_SERVICE_URL=$CLOUD_RUN_SERVICE_URL \
   --set-env-vars=SERVICE_ACCOUNT_EMAIL=$SERVICE_ACCOUNT_EMAIL

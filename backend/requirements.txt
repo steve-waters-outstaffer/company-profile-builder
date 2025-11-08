@@ -11,4 +11,3 @@ pydantic
 gunicorn
 google-cloud-firestore
 google-cloud-tasks
-firecrawl-py
