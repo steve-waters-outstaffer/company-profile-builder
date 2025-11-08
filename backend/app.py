@@ -151,6 +151,8 @@ def run_research_job():
                 update_data['job_openings'] = final_state['job_openings']
             if 'recent_news_summary' in final_state:
                 update_data['recent_news_summary'] = final_state['recent_news_summary']
+            if 'data_source' in final_state:
+                update_data['data_source'] = final_state['data_source']
             
             # Optional: Save raw debug data
             if 'careers_page_content' in final_state:

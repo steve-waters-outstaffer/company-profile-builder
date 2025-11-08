@@ -2,14 +2,28 @@
 import config
 import datetime
 import requests
+import logging
 from typing import List, Optional, TypedDict
 from pydantic import BaseModel, Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, END
 from tools import scrape_linkedin_company
+from google.cloud import logging as cloud_logging
+
+# Setup structured GCP logging
+try:
+    client = cloud_logging.Client()
+    client.setup_logging()
+    logging.info("GCP Cloud Logging initialized")
+except Exception as e:
+    logging.basicConfig(level=logging.INFO)
+    logging.warning(f"Failed to initialize GCP logging, using basic logging: {e}")
 
 # --- 1. Define Only What LLM Needs to Generate ---
+
+class LinkedInURL(BaseModel):
+    url: str = Field(description="The LinkedIn company profile URL")
 
 class JobOpening(BaseModel):
     title: str = Field(description="The job title")
@@ -35,6 +49,7 @@ class AgentState(TypedDict, total=False):
     recent_news: str  # Raw text from Tavily
     job_openings: List[dict]  # LLM-generated jobs
     recent_news_summary: str  # LLM-generated news summary
+    data_source: str  # Track where company data came from: "linkedin" or "website"
 
 # --- 3. Define the Agent's Tools ---
 
@@ -46,96 +61,198 @@ llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_NAME)
 
 def start_node(state: AgentState):
     """Parses the initial input to kick off the flow."""
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: start_node")
+    logging.info(f"Starting research for: {state['initial_input']}")
     state['company_name'] = state['initial_input'].strip()
     
     if state.get('provided_url'):
         url = state['provided_url']
         if "linkedin.com/company" in url:
             state['linkedin_url'] = url
+            logging.info(f"LinkedIn URL provided: {url}")
         else:
             state['website_url'] = url
+            logging.info(f"Website URL provided: {url}")
 
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Exiting node: start_node")
     return state
 
 def find_linkedin_url_node(state: AgentState):
     """If we don't have a LinkedIn URL, find it with Tavily."""
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: find_linkedin_url_node")
     if state.get('linkedin_url'):
-        print(f"[TRACE] {datetime.datetime.now().isoformat()}: LinkedIn URL already present, skipping search.")
+        logging.info("LinkedIn URL already present, skipping search")
         return state
 
     query = f"official LinkedIn company profile for {state['company_name']}"
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking Tavily for LinkedIn URL...")
-    results = tavily_tool.invoke(query)
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Tavily search complete.")
+    logging.info(f"Searching for LinkedIn URL with query: {query}")
+    
+    try:
+        results = tavily_tool.invoke(query)
+        logging.debug(f"Tavily results: {results}")
 
-    prompt = f"Find the single best LinkedIn company URL from these search results: {results}"
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking LLM for URL extraction...")
-    url = llm.invoke(prompt).content
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: LLM extraction complete.")
+        prompt = f"Find the single best LinkedIn company URL from these search results: {results}"
+        url = llm.invoke(prompt).content
+        
+        state['linkedin_url'] = url.strip()
+        logging.info(f"Found LinkedIn URL: {state['linkedin_url']}")
+    except Exception as e:
+        logging.error(f"Failed to find LinkedIn URL: {str(e)}", exc_info=True)
+        state['linkedin_url'] = None
 
-    state['linkedin_url'] = url.strip()
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Exiting node: find_linkedin_url_node")
     return state
+
+def scrape_company_website_fallback(state: AgentState):
+    """Fallback: scrape company website directly if LinkedIn fails."""
+    logging.warning("Using website fallback - scraping company website directly")
+    
+    if not state.get('website_url'):
+        logging.error("No website URL available for fallback")
+        return {
+            'name': state['company_name'],
+            'website': None,
+            'description': 'Company information unavailable',
+            'data_source': 'none'
+        }
+    
+    try:
+        logging.info(f"Scraping website: {state['website_url']}")
+        url = "https://api.firecrawl.dev/v2/scrape"
+        payload = {
+            "url": state['website_url'],
+            "onlyMainContent": True,
+            "formats": ["markdown"]
+        }
+        headers = {
+            "Authorization": f"Bearer {config.FIRECRAWL_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        
+        content = result.get('data', {}).get('markdown', '')
+        logging.info(f"Scraped {len(content)} characters from website")
+        
+        # Use LLM to extract basic company info from website
+        extract_prompt = f"""
+        Extract basic company information from this website content:
+        
+        {content[:5000]}
+        
+        Return a brief summary with:
+        - Company name
+        - Brief description (2-3 sentences)
+        - Industry (if mentioned)
+        - Location/headquarters (if mentioned)
+        
+        Format as plain text.
+        """
+        
+        summary = llm.invoke(extract_prompt).content
+        logging.info("Extracted company info from website")
+        
+        return {
+            'name': state['company_name'],
+            'website': state['website_url'],
+            'description': summary,
+            'industry': 'Unknown',
+            'headquarters': 'Unknown',
+            'size': 'Unknown',
+            'founded': 'Unknown',
+            'data_source': 'website'
+        }
+        
+    except Exception as e:
+        logging.error(f"Website fallback failed: {str(e)}", exc_info=True)
+        return {
+            'name': state['company_name'],
+            'website': state.get('website_url'),
+            'description': 'Company information unavailable',
+            'data_source': 'none'
+        }
 
 def scrape_linkedin_node(state: AgentState):
     """Scrapes the LinkedIn page to get the structured JSON data."""
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: scrape_linkedin_node")
+    logging.info(f"Attempting to scrape LinkedIn: {state.get('linkedin_url')}")
+    
+    if not state.get('linkedin_url'):
+        logging.warning("No LinkedIn URL available, using website fallback")
+        state['linkedin_data'] = scrape_company_website_fallback(state)
+        state['data_source'] = state['linkedin_data'].get('data_source', 'none')
+        return state
 
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking ScrapeCreators...")
-    linkedin_data = scrape_linkedin_company.invoke({"company_linkedin_url": state['linkedin_url']})
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: ScrapeCreators complete.")
+    try:
+        linkedin_data = scrape_linkedin_company.invoke({"company_linkedin_url": state['linkedin_url']})
+        
+        # Check if ScrapeCreators returned valid data
+        if not linkedin_data or not isinstance(linkedin_data, dict):
+            logging.error(f"ScrapeCreators returned invalid data: {linkedin_data}")
+            state['linkedin_data'] = scrape_company_website_fallback(state)
+            state['data_source'] = 'website'
+        elif linkedin_data.get('success') == False or not linkedin_data.get('name'):
+            logging.error(f"ScrapeCreators failed: {linkedin_data.get('error', 'Unknown error')}")
+            state['linkedin_data'] = scrape_company_website_fallback(state)
+            state['data_source'] = 'website'
+        else:
+            logging.info(f"Successfully scraped LinkedIn for: {linkedin_data.get('name')}")
+            state['linkedin_data'] = linkedin_data
+            state['data_source'] = 'linkedin'
+            
+            # Update company name and website from LinkedIn data
+            state['company_name'] = linkedin_data.get('name', state['company_name'])
+            state['website_url'] = linkedin_data.get('website', state['website_url'])
+            
+    except Exception as e:
+        logging.error(f"LinkedIn scrape exception: {str(e)}", exc_info=True)
+        state['linkedin_data'] = scrape_company_website_fallback(state)
+        state['data_source'] = 'website'
 
-    state['linkedin_data'] = linkedin_data
-
-    state['company_name'] = linkedin_data.get('name', state['company_name'])
-    state['website_url'] = linkedin_data.get('website', state['website_url'])
-
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Exiting node: scrape_linkedin_node")
     return state
 
 def find_jobs_and_news_node(state: AgentState):
     """Finds the careers page URL and recent news."""
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: find_jobs_and_news_node")
-
     jobs_query = f"careers page job openings for {state['company_name']} site:{state['website_url']}"
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking Tavily to find careers page URL...")
-    careers_results = tavily_tool.invoke(jobs_query)
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Tavily careers URL search complete.")
+    logging.info(f"Searching for careers page with query: {jobs_query}")
     
-    careers_prompt = f"""
-    From these search results, extract the single best URL for the company's careers/jobs page.
-    Return ONLY the URL, nothing else.
-    
-    Search results:
-    {careers_results}
-    """
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking LLM to extract careers URL...")
-    careers_url = llm.invoke(careers_prompt).content.strip()
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Extracted careers URL: {careers_url}")
-    state['careers_page_url'] = careers_url
+    try:
+        careers_results = tavily_tool.invoke(jobs_query)
+        logging.debug(f"Careers page search results: {careers_results}")
+        
+        careers_prompt = f"""
+        From these search results, extract the single best URL for the company's careers/jobs page.
+        Return ONLY the URL, nothing else.
+        
+        Search results:
+        {careers_results}
+        """
+        
+        careers_url = llm.invoke(careers_prompt).content.strip()
+        state['careers_page_url'] = careers_url
+        logging.info(f"Found careers page URL: {careers_url}")
+    except Exception as e:
+        logging.error(f"Failed to find careers page: {str(e)}", exc_info=True)
+        state['careers_page_url'] = None
 
     news_query = f"recent news 2024 2025 for {state['company_name']}"
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking Tavily for news...")
-    state['recent_news'] = tavily_tool.invoke(news_query)
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Tavily news search complete.")
+    logging.info(f"Searching for recent news with query: {news_query}")
+    
+    try:
+        state['recent_news'] = tavily_tool.invoke(news_query)
+        logging.info("News search complete")
+    except Exception as e:
+        logging.error(f"Failed to get news: {str(e)}", exc_info=True)
+        state['recent_news'] = ""
 
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Exiting node: find_jobs_and_news_node")
     return state
 
 def scrape_careers_page_node(state: AgentState):
     """Scrapes the full careers page content using Firecrawl v2 API."""
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: scrape_careers_page_node")
-    
     if not state.get('careers_page_url'):
-        print(f"[TRACE] {datetime.datetime.now().isoformat()}: No careers URL found, skipping scrape.")
+        logging.warning("No careers URL found, skipping scrape")
         state['careers_page_content'] = "No careers page found."
         return state
     
     try:
-        print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking Firecrawl to scrape {state['careers_page_url']}...")
+        logging.info(f"Scraping careers page: {state['careers_page_url']}")
         
         url = "https://api.firecrawl.dev/v2/scrape"
         payload = {
@@ -148,26 +265,22 @@ def scrape_careers_page_node(state: AgentState):
             "Content-Type": "application/json"
         }
         
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
         result = response.json()
         
-        print(f"[TRACE] {datetime.datetime.now().isoformat()}: Firecrawl scrape complete.")
-        
-        # v2 API returns data.markdown
         state['careers_page_content'] = result.get('data', {}).get('markdown', '')
-        print(f"[TRACE] {datetime.datetime.now().isoformat()}: Extracted {len(state['careers_page_content'])} characters of careers page content.")
+        logging.info(f"Scraped {len(state['careers_page_content'])} characters from careers page")
         
     except Exception as e:
-        print(f"[ERROR] {datetime.datetime.now().isoformat()}: Firecrawl scrape failed: {str(e)}")
+        logging.error(f"Firecrawl scrape failed: {str(e)}", exc_info=True)
         state['careers_page_content'] = f"Failed to scrape careers page: {str(e)}"
     
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Exiting node: scrape_careers_page_node")
     return state
 
 def generate_final_report_node(state: AgentState):
     """Use LLM only to extract jobs from careers page and summarize news."""
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Entering node: generate_final_report_node")
+    logging.info("Generating final report with LLM")
 
     prompt = f"""
     You are a recruitment research analyst. Extract two things:
@@ -191,16 +304,19 @@ def generate_final_report_node(state: AgentState):
     Return structured JSON with job_openings array and recent_news_summary string.
     """
     
-    structured_llm = llm.with_structured_output(LLMGeneratedData)
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Invoking LLM for jobs and news extraction...")
-    llm_result = structured_llm.invoke(prompt)
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: LLM extraction complete.")
+    try:
+        structured_llm = llm.with_structured_output(LLMGeneratedData)
+        llm_result = structured_llm.invoke(prompt)
+        
+        state['job_openings'] = [job.dict() for job in llm_result.job_openings]
+        state['recent_news_summary'] = llm_result.recent_news_summary
+        
+        logging.info(f"Extracted {len(state['job_openings'])} jobs and news summary")
+    except Exception as e:
+        logging.error(f"LLM extraction failed: {str(e)}", exc_info=True)
+        state['job_openings'] = []
+        state['recent_news_summary'] = "Unable to generate news summary"
 
-    state['job_openings'] = [job.dict() for job in llm_result.job_openings]
-    state['recent_news_summary'] = llm_result.recent_news_summary
-
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Extracted {len(state['job_openings'])} jobs")
-    print(f"[TRACE] {datetime.datetime.now().isoformat()}: Exiting node: generate_final_report_node")
     return state
 
 # --- 5. Define the Graph ---

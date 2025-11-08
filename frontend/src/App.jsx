@@ -66,7 +66,8 @@ function App() {
             ...data.linkedin_data,
             // LLM-generated fields
             job_openings: data.job_openings || [],
-            recent_news_summary: data.recent_news_summary || ''
+            recent_news_summary: data.recent_news_summary || '',
+            data_source: data.data_source || 'linkedin'
           };
           
           setReportData(combinedReport);
@@ -173,6 +174,16 @@ function App() {
           )}
           {!reportData.logo && <h2>{reportData.name}</h2>}
 
+          <p className="data-sources">
+            📊 Company data from: <strong>{reportData.data_source === 'linkedin' ? 'LinkedIn' : reportData.data_source === 'website' ? 'Company Website' : 'Multiple Sources'}</strong>
+            {reportData.job_openings && reportData.job_openings.length > 0 && (
+              <> · 💼 Jobs from: <strong>Careers Page</strong></>
+            )}
+            {reportData.recent_news_summary && (
+              <> · 📰 News from: <strong>Web Search</strong></>
+            )}
+          </p>
+
           <div className="report-section">
             <h3>Basic Info</h3>
             <p><strong>Website:</strong> <a href={reportData.website} target="_blank" rel="noopener noreferrer">{reportData.website}</a></p>
@@ -217,15 +228,20 @@ function App() {
 
           {reportData.job_openings && reportData.job_openings.length > 0 && (
             <div className="report-section">
-              <h3>Job Openings</h3>
-              <ul>
-                {reportData.job_openings.map((job, idx) => (
-                  <li key={idx}>
-                    <strong>{job.title}</strong> - {job.location}
-                    {job.link && <a href={job.link} target="_blank" rel="noopener noreferrer"> [View]</a>}
-                  </li>
-                ))}
-              </ul>
+              <h3>Job Openings ({reportData.job_openings.length} positions)</h3>
+              <details open={reportData.job_openings.length <= 10}>
+                <summary className="jobs-summary">
+                  {reportData.job_openings.length <= 10 ? 'View all positions' : 'Click to expand/collapse job listings'}
+                </summary>
+                <ul>
+                  {reportData.job_openings.map((job, idx) => (
+                    <li key={idx}>
+                      <strong>{job.title}</strong> - {job.location}
+                      {job.link && <a href={job.link} target="_blank" rel="noopener noreferrer"> [Apply]</a>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             </div>
           )}
 
