@@ -6,10 +6,14 @@ import config
 from langchain_tavily import TavilySearch
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+logger = logging.getLogger(__name__)
+
+
 class CareersURL(BaseModel):
     """Schema for LLM to return the best careers page URL."""
     url: str = Field(description="The best careers/jobs page URL from the search results")
     reasoning: str = Field(description="Brief explanation of why this is the best match")
+
 
 class JobsDiscoveryAgent:
     """
@@ -26,48 +30,65 @@ class JobsDiscoveryAgent:
             "Content-Type": "application/json"
         }
         self.tavily = TavilySearch(max_results=5, api_key=tavily_api_key)
+        logger.info("[JOBS_AGENT] Initialized")
 
     def discover_jobs(self, company_name: str, company_url: Optional[str]) -> Dict:
         """Main entry point for job discovery."""
-        logging.info(f"Starting job discovery for: {company_name}")
+        logger.info(f"[JOBS_AGENT] Starting job discovery | company: '{company_name}' | url: '{company_url}'")
 
         try:
             # 1. Find careers page
             careers_url = self._find_careers_page(company_name, company_url)
             if not careers_url:
-                return {"jobs": [], "error": "No careers page found"}
+                logger.warning(f"[JOBS_AGENT] No careers page found | company: '{company_name}'")
+                return {"job_listings": [], "error": "No careers page found"}
 
-            # 2. Extract jobs directly
-            logging.info(f"Extracting jobs from: {careers_url}")
+            # 2. Extract jobs
+            logger.info(f"[JOBS_AGENT] Extracting jobs | company: '{company_name}' | careers_url: {careers_url}")
             jobs = self._extract_jobs(careers_url)
-            logging.info(f"Found {len(jobs)} jobs")
+            logger.info(f"[JOBS_AGENT] SUCCESS - Jobs extracted | company: '{company_name}' | count: {len(jobs)}")
 
             return {"job_listings": jobs, "careers_url": careers_url}
 
         except Exception as e:
-            logging.error(f"Job discovery failed: {e}", exc_info=True)
+            logger.error(f"[JOBS_AGENT] ERROR | company: '{company_name}' | error: {str(e)}", exc_info=True)
             return {"job_listings": [], "error": str(e)}
 
     def _find_careers_page(self, company_name: str, company_url: Optional[str]) -> Optional[str]:
+        logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}'")
+        
         query = f"official careers page for {company_name}"
         if company_url:
             query += f" site:{company_url}"
 
         try:
+            logger.info(f"[JOBS_AGENT] Tavily search starting | company: '{company_name}' | query: '{query}'")
             results = self.tavily.invoke(query)
-            prompt = f"""Find the official page (URL) for listing and advertising open careers/jobs URL for {company_name} from these results.
-            Return ONLY the URL.
-            Results: {results}"""
+            results_count = len(results) if isinstance(results, list) else 'N/A'
+            logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {results_count}")
+            
+            prompt = f"""Find the BEST official careers/jobs page URL for {company_name} from these search results.
+            Choose the URL that is most likely to list current job openings.
+            Explain WHY you chose this URL.
+            
+            Search results: {results}"""
 
-            # Simple extraction for now to save time, can use structured output if needed
-            url = self.llm.invoke(prompt).content.strip()
-            if url.startswith('http'):
-                return url
+            structured_llm = self.llm.with_structured_output(CareersURL)
+            result = structured_llm.invoke(prompt)
+            
+            logger.info(f"[JOBS_AGENT] LLM selection | company: '{company_name}' | url: {result.url} | reasoning: {result.reasoning}")
+            
+            if result.url and result.url.startswith('http'):
+                return result.url
+            else:
+                logger.warning(f"[JOBS_AGENT] No valid careers URL found | company: '{company_name}'")
+                return None
         except Exception as e:
-            logging.error(f"Error finding careers page: {e}")
-        return None
+            logger.error(f"[JOBS_AGENT] Error finding careers page | company: '{company_name}' | error: {str(e)}", exc_info=True)
+            return None
 
     def _extract_jobs(self, source_url: str) -> List[Dict]:
+        logger.info(f"[JOBS_AGENT] Starting Firecrawl extraction | url: {source_url}")
         try:
             schema = {
                 "type": "object",
@@ -90,12 +111,12 @@ class JobsDiscoveryAgent:
             }
 
             payload = {
-                # FIXED: v2/extract requires 'urls' as a list, not 'url' string
                 "urls": [source_url],
                 "schema": schema,
                 "prompt": "Extract all individual job postings. Required fields: 'title' (must be the specific role name, strictly AVOID using locations like 'Remote' or 'New York' as the title), 'location', and 'url' (direct link to apply). Optional fields: 'posted_date' and 'description' (Short summary of the role). Ignore general page text."
             }
 
+            logger.info(f"[JOBS_AGENT] Calling Firecrawl API | url: {source_url}")
             response = requests.post(
                 f"{self.base_url}/extract",
                 json=payload,
@@ -105,7 +126,8 @@ class JobsDiscoveryAgent:
 
             if response.ok:
                 data = response.json().get('data', {})
-                # Handle potential empty list if 'data' is a list (batch response) or dict
+                logger.info(f"[JOBS_AGENT] Firecrawl response received | url: {source_url}")
+                
                 if isinstance(data, list) and len(data) > 0:
                     jobs_data = data[0].get('jobs', [])
                 elif isinstance(data, dict):
@@ -113,15 +135,18 @@ class JobsDiscoveryAgent:
                 else:
                     jobs_data = []
 
-                return [
+                valid_jobs = [
                     {**job, 'url': job.get('url', source_url)}
                     for job in jobs_data
                     if job.get('title')
                 ]
+                
+                logger.info(f"[JOBS_AGENT] Extraction SUCCESS | url: {source_url} | raw_count: {len(jobs_data)} | valid_count: {len(valid_jobs)}")
+                return valid_jobs
             else:
-                logging.error(f"Firecrawl extract failed: {response.status_code} {response.text}")
+                logger.error(f"[JOBS_AGENT] Firecrawl extraction FAILED | url: {source_url} | status: {response.status_code} | response: {response.text[:200]}")
                 return []
 
         except Exception as e:
-            logging.error(f"Extraction failed: {e}")
+            logger.error(f"[JOBS_AGENT] Extraction ERROR | url: {source_url} | error: {str(e)}", exc_info=True)
             return []
