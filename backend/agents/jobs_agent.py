@@ -57,7 +57,7 @@ class JobsDiscoveryAgent:
     def _find_careers_page(self, company_name: str, company_url: Optional[str]) -> Optional[str]:
         logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}'")
         
-        query = f"official careers page for {company_name}"
+        query = f"Return the companies official page listing open positions for this Company {company_name}"
         if company_url:
             query += f" site:{company_url}"
 
@@ -67,8 +67,8 @@ class JobsDiscoveryAgent:
             results_count = len(results) if isinstance(results, list) else 'N/A'
             logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {results_count}")
             
-            prompt = f"""Find the BEST official careers/jobs page URL for {company_name} from these search results.
-            Choose the URL that is most likely to list current job openings.
+            prompt = f"""Find the BEST official open careers/jobs listing page URL for {company_name} from these search results.
+            Choose the URL that is most likely to list current job openings, that candidates can apply to.
             Explain WHY you chose this URL.
             
             Search results: {results}"""

@@ -17,7 +17,6 @@ try:
     client.setup_logging()
     logger = logging.getLogger(__name__)
 except Exception as e:
-    # Fallback to basic logging if cloud logging unavailable
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.warning(f"Cloud logging unavailable: {e}")
@@ -62,7 +61,6 @@ def start_research():
             logger.error("[START_RESEARCH] FAILED - No company name provided")
             return jsonify({"error": "No company name provided"}), 400
 
-        # 1. Create job document in Firestore
         job_ref = db.collection(FIRESTORE_COLLECTION).document()
         job_id = job_ref.id
         
@@ -77,15 +75,14 @@ def start_research():
             "linkedin_data": None,
             "job_openings": None,
             "recent_news_summary": None,
+            "client_brief": None,
             "error": None,
             "created_at": firestore.SERVER_TIMESTAMP
         }
         job_ref.set(job_data)
         logger.info(f"[START_RESEARCH] Job document saved | job_id: {job_id}")
 
-        # 2. Create Cloud Task
         parent = task_client.queue_path(PROJECT_ID, QUEUE_LOCATION, QUEUE_ID)
-
         task = {
             "http_request": {
                 "http_method": tasks_v2.HttpMethod.POST,
@@ -99,7 +96,6 @@ def start_research():
             },
             "dispatch_deadline": {"seconds": 1800}
         }
-
         task_client.create_task(parent=parent, task=task)
         logger.info(f"[START_RESEARCH] Cloud Task created | job_id: {job_id} | queue: {QUEUE_ID}")
 
@@ -110,7 +106,6 @@ def start_research():
         return jsonify({"error": str(e)}), 500
 
 
-# --- Endpoint 2: Run the Job (Called by Cloud Tasks) ---
 @app.route('/run-research-job', methods=['POST'])
 def run_research_job():
     job_id = None
@@ -139,7 +134,6 @@ def run_research_job():
             "provided_url": job_data.get("url")
         }
 
-        # Execute graph with streaming
         steps_complete = []
         final_state = None
 
@@ -148,23 +142,13 @@ def run_research_job():
         for step in graph.stream(inputs):
             step_name = list(step.keys())[0]
             steps_complete.append(step_name)
-
             logger.info(f"[RUN_JOB] Step completed | job_id: {job_id} | step: {step_name} | total_steps: {len(steps_complete)}")
-
-            job_ref.update({
-                "status": "running",
-                "steps_complete": steps_complete
-            })
-
+            job_ref.update({"status": "running", "steps_complete": steps_complete})
             final_state = step[step_name]
 
         logger.info(f"[RUN_JOB] Graph execution complete | job_id: {job_id} | steps: {steps_complete}")
 
-        # Mark job as complete
-        update_data = {
-            "status": "complete",
-            "completed_at": firestore.SERVER_TIMESTAMP
-        }
+        update_data = {"status": "complete", "completed_at": firestore.SERVER_TIMESTAMP}
         
         if final_state:
             if 'linkedin_data' in final_state:
@@ -177,10 +161,12 @@ def run_research_job():
             if 'recent_news_summary' in final_state:
                 update_data['recent_news_summary'] = final_state['recent_news_summary']
                 logger.info(f"[RUN_JOB] Saving recent_news_summary | job_id: {job_id}")
+            if 'client_brief' in final_state:
+                update_data['client_brief'] = final_state['client_brief']
+                logger.info(f"[RUN_JOB] Saving client_brief | job_id: {job_id}")
             if 'data_source' in final_state:
                 update_data['data_source'] = final_state['data_source']
                 logger.info(f"[RUN_JOB] Data source | job_id: {job_id} | source: {final_state['data_source']}")
-            
             if 'careers_page_content' in final_state:
                 update_data['raw_careers_markdown'] = final_state['careers_page_content']
             if 'recent_news' in final_state:
@@ -193,14 +179,9 @@ def run_research_job():
 
     except Exception as e:
         logger.error(f"[RUN_JOB] ERROR | job_id: {job_id} | exception: {str(e)}", exc_info=True)
-        
         if job_id:
-            db.collection(FIRESTORE_COLLECTION).document(job_id).update({
-                "status": "error",
-                "error": str(e)
-            })
+            db.collection(FIRESTORE_COLLECTION).document(job_id).update({"status": "error", "error": str(e)})
             logger.info(f"[RUN_JOB] Error status saved to Firestore | job_id: {job_id}")
-        
         return "Job failed", 200
 
 

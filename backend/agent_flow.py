@@ -1,6 +1,6 @@
 # agent_flow.py
 import logging
-from typing import TypedDict, List, Optional, Any
+from typing import TypedDict, List, Optional, Any, Dict
 from langgraph.graph import StateGraph, END
 from google.cloud import logging as cloud_logging
 import config
@@ -8,6 +8,7 @@ import config
 from agents.linkedin_agent import LinkedInAgent
 from agents.news_agent import NewsAgent
 from agents.jobs_agent import JobsDiscoveryAgent
+from agents.client_summary_agent import ClientSummaryAgent
 
 # Setup Cloud Logging
 try:
@@ -29,6 +30,7 @@ class AgentState(TypedDict):
     recent_news_summary: str
     job_openings: List[dict]
     data_source: str
+    client_brief: Dict  # NEW
 
 # --- Nodes ---
 
@@ -96,6 +98,29 @@ def jobs_node(state: AgentState):
         state['job_openings'] = []
     return state
 
+def client_summary_node(state: AgentState):
+    logger.info(f"[AGENT_FLOW] CLIENT_SUMMARY starting | company: '{state['company_name']}'")
+    try:
+        agent = ClientSummaryAgent()
+        
+        # Get website markdown if available (None for now, can enhance later)
+        website_markdown = None
+        
+        brief = agent.create_brief(
+            company_name=state['company_name'],
+            linkedin_data=state.get('linkedin_data'),
+            website_markdown=website_markdown,
+            news_summary=state.get('recent_news_summary'),
+            job_listings=state.get('job_openings')
+        )
+        
+        state['client_brief'] = brief
+        logger.info(f"[AGENT_FLOW] CLIENT_SUMMARY complete | company: '{state['company_name']}'")
+    except Exception as e:
+        logger.error(f"[AGENT_FLOW] CLIENT_SUMMARY ERROR | company: '{state['company_name']}' | error: {str(e)}", exc_info=True)
+        state['client_brief'] = {"error": str(e)}
+    return state
+
 # --- Graph Construction ---
 
 def get_research_graph():
@@ -107,12 +132,14 @@ def get_research_graph():
     workflow.add_node("build_profile", company_profile_node)
     workflow.add_node("get_news", news_node)
     workflow.add_node("get_jobs", jobs_node)
+    workflow.add_node("client_summary", client_summary_node)
 
     workflow.set_entry_point("init")
     workflow.add_edge("init", "build_profile")
     workflow.add_edge("build_profile", "get_news")
     workflow.add_edge("get_news", "get_jobs")
-    workflow.add_edge("get_jobs", END)
+    workflow.add_edge("get_jobs", "client_summary")
+    workflow.add_edge("client_summary", END)
 
     logger.info("[AGENT_FLOW] Research graph compiled")
     return workflow.compile()
