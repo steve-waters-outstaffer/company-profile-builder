@@ -21,10 +21,10 @@ const db = getFirestore(app);
 // Updated to match actual backend workflow
 const WORKFLOW_STEPS = [
   { id: 'init', label: 'Initializing research...' },
-  { id: 'build_profile', label: 'Building company profile' },
-  { id: 'get_news', label: 'Gathering recent news' },
-  { id: 'get_jobs', label: 'Discovering job openings' },
-  { id: 'client_summary', label: 'Generating client summary' }
+  { id: 'build_profile', label: 'Building company profile e.g. LinkedIn' },
+  { id: 'get_news', label: 'Searching recent news' },
+  { id: 'get_jobs', label: 'Looking for current job openings' },
+  { id: 'client_summary', label: 'Creating client summary' },
 ];
 
 function App() {
@@ -294,8 +294,8 @@ function App() {
                 <ul>
                   {reportData.job_openings.map((job, idx) => (
                     <li key={idx}>
-                      <strong>{job.title}</strong> - {job.location}
-                      {job.link && <a href={job.link} target="_blank" rel="noopener noreferrer"> [Apply]</a>}
+                      <span className="job-title">{job.title || 'View Position Details'}</span> - {job.location}
+                      {job.url && <a href={job.url} target="_blank" rel="noopener noreferrer"> [Apply]</a>}
                     </li>
                   ))}
                 </ul>

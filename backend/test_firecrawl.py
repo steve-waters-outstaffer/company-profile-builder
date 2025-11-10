@@ -45,7 +45,7 @@ def test_extract(url):
     }
 
     # The prompt from your curl command
-    prompt = "Extract all job postings with title, location, and URL"
+    prompt = "Extract all jobs. For each job: 'title' is the role name like 'Accountant' or 'Billing Manager', 'location' is where the job is based, 'url' is the apply link."
 
     # --- STEP 1: POST to start the job ---
     post_url = "https://api.firecrawl.dev/v2/extract"

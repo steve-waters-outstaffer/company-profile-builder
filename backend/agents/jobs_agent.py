@@ -125,7 +125,7 @@ class JobsDiscoveryAgent:
             "required": ["jobs"]
         }
 
-        prompt = "Extract all individual job postings. Required fields: 'title' (must be the specific role name, strictly AVOID using locations like 'Remote' or 'New York' as the title), 'location', and 'url' (direct link to apply). Optional fields: 'posted_date' and 'description' (Short summary of the role). Ignore general page text."
+        prompt = "Extract all jobs. For each job: 'title' is the role name like 'Accountant' or 'Billing Manager', 'location' is where the job is based, 'url' is the apply link."
 
         # --- STEP 1: POST to start the job (Raw API call) ---
         post_url = "https://api.firecrawl.dev/v2/extract"
@@ -189,13 +189,13 @@ class JobsDiscoveryAgent:
                     else:
                         logger.warning("⚠️  Job completed but 'jobs' array was empty or missing.")
 
-                    # Filter out any lingering jobs without a title, just in case
+                    # Keep jobs even if title is empty, but ensure URL exists
                     valid_jobs = [
                         {**job, 'url': job.get('url', source_url)}
                         for job in jobs_data
-                        if job.get('title') and job.get('url')
+                        if job.get('url')  # Only require URL, allow empty titles
                     ]
-                    logger.info(f"[JOBS_AGENT] Returning {len(valid_jobs)} valid jobs.")
+                    logger.info(f"[JOBS_AGENT] Returning {len(valid_jobs)} valid jobs (titles may be empty).")
                     return valid_jobs
 
                 elif status == 'failed' or status == 'cancelled':

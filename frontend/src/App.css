@@ -116,6 +116,11 @@ h1 {
   border-bottom: none;
 }
 
+.job-title {
+  font-weight: 500;
+  color: #2c3e50;
+}
+
 .tags {
   display: flex;
   flex-wrap: wrap;
