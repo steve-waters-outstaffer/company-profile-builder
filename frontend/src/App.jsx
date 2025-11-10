@@ -18,23 +18,14 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 // The steps we expect from the backend agent_flow.py
-// Define the workflow structure with parallel branches
-const WORKFLOW_STEPS = {
-  linear: [
-    { id: 'start', label: 'Starting research...' },
-    { id: 'find_linkedin_url', label: 'Finding LinkedIn Profile' },
-    { id: 'scrape_linkedin', label: 'Scraping LinkedIn Data' },
-    { id: 'scrape_about_page', label: 'Scraping Company About Page' },
-    { id: 'parallel_research_coordinator', label: 'Starting parallel research...' }
-  ],
-  parallel: [
-    { id: 'find_news', label: 'Finding Recent News', branch: 'news' },
-    { id: 'discover_jobs', label: 'Discovering Job Openings', branch: 'jobs' }
-  ],
-  final: [
-    { id: 'generate_final_report', label: 'Generating Final Report' }
-  ]
-};
+// Updated to match actual backend workflow
+const WORKFLOW_STEPS = [
+  { id: 'init', label: 'Initializing research...' },
+  { id: 'build_profile', label: 'Building company profile' },
+  { id: 'get_news', label: 'Gathering recent news' },
+  { id: 'get_jobs', label: 'Discovering job openings' },
+  { id: 'client_summary', label: 'Generating client summary' }
+];
 
 function App() {
   const [companyInput, setCompanyInput] = useState('');
@@ -76,6 +67,7 @@ function App() {
             // LLM-generated fields
             job_openings: data.job_openings || [],
             recent_news_summary: data.recent_news_summary || '',
+            client_brief: data.client_brief || null,
             data_source: data.data_source || 'linkedin'
           };
           
@@ -158,14 +150,13 @@ function App() {
         <div className="workflow-container">
           <h3>Working on it...</h3>
           
-          {/* Linear steps */}
           <div className="workflow-section">
-            {WORKFLOW_STEPS.linear.map((step) => {
+            {WORKFLOW_STEPS.map((step, index) => {
               const isComplete = completedSteps.includes(step.id);
-              const isCurrent = !isComplete && !completedSteps.some(s => 
-                WORKFLOW_STEPS.linear.indexOf(WORKFLOW_STEPS.linear.find(st => st.id === s)) > 
-                WORKFLOW_STEPS.linear.indexOf(step)
+              const currentStepIndex = WORKFLOW_STEPS.findIndex(s => 
+                completedSteps.includes(s.id)
               );
+              const isCurrent = index === currentStepIndex + 1;
 
               return (
                 <div key={step.id} className={`step-item ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
@@ -175,63 +166,6 @@ function App() {
               );
             })}
           </div>
-
-          {/* Visual fork indicator */}
-          {completedSteps.includes('parallel_research_coordinator') && (
-            <div className="parallel-fork">
-              <div className="fork-line"></div>
-              <div className="fork-branches">
-                {/* News branch */}
-                <div className="branch-container">
-                  {WORKFLOW_STEPS.parallel.filter(s => s.branch === 'news').map((step) => {
-                    const isComplete = completedSteps.includes(step.id);
-                    const isCurrent = !isComplete && completedSteps.includes('parallel_research_coordinator');
-
-                    return (
-                      <div key={step.id} className={`step-item parallel-step ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
-                        <span className="step-icon">{isComplete ? '✅' : '...'}</span>
-                        {step.label}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Jobs branch */}
-                <div className="branch-container">
-                  {WORKFLOW_STEPS.parallel.filter(s => s.branch === 'jobs').map((step) => {
-                    const isComplete = completedSteps.includes(step.id);
-                    const isCurrent = !isComplete && completedSteps.includes('parallel_research_coordinator');
-
-                    return (
-                      <div key={step.id} className={`step-item parallel-step ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
-                        <span className="step-icon">{isComplete ? '✅' : '...'}</span>
-                        {step.label}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="merge-line"></div>
-            </div>
-          )}
-
-          {/* Final step - only show after parallel branches complete */}
-          {(completedSteps.includes('find_news') || completedSteps.includes('discover_jobs')) && (
-            <div className="workflow-section">
-              {WORKFLOW_STEPS.final.map((step) => {
-                const isComplete = completedSteps.includes(step.id);
-                const bothParallelComplete = completedSteps.includes('find_news') && completedSteps.includes('discover_jobs');
-                const isCurrent = !isComplete && bothParallelComplete;
-
-                return (
-                  <div key={step.id} className={`step-item ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
-                    <span className="step-icon">{isComplete ? '✅' : '...'}</span>
-                    {step.label}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 
@@ -256,6 +190,49 @@ function App() {
               <> · 📰 News from: <strong>Web Search</strong></>
             )}
           </p>
+
+          {/* Client Brief - Sales-Ready Summary */}
+          {reportData.client_brief && (
+            <div className="report-section client-brief-section">
+              <h3>📋 Sales Brief</h3>
+              
+              <div className="brief-field">
+                <h4>Summary</h4>
+                <p>{reportData.client_brief.summary}</p>
+              </div>
+
+              {reportData.client_brief.positioning && (
+                <div className="brief-field">
+                  <h4>Positioning</h4>
+                  <p>{reportData.client_brief.positioning}</p>
+                </div>
+              )}
+
+              {reportData.client_brief.hiring_context && (
+                <div className="brief-field">
+                  <h4>Hiring Context</h4>
+                  <p>{reportData.client_brief.hiring_context}</p>
+                </div>
+              )}
+
+              {reportData.client_brief.talking_points && reportData.client_brief.talking_points.length > 0 && (
+                <div className="brief-field">
+                  <h4>Talking Points</h4>
+                  <ul>
+                    {reportData.client_brief.talking_points.map((point, idx) => (
+                      <li key={idx}>{point}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {reportData.client_brief.tone && (
+                <div className="brief-field">
+                  <p><strong>Communication Tone:</strong> {reportData.client_brief.tone}</p>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="report-section">
             <h3>Basic Info</h3>

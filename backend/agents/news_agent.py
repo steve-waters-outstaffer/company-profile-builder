@@ -25,6 +25,8 @@ class NewsAgent:
             Focus on funding, product launches, major hires, or expansions.
             Keep it to a concise 5-10 line paragraph.
             
+            IMPORTANT: Return ONLY plain text with simple line breaks. Do NOT use markdown formatting, bullet points, asterisks, or special characters.
+            
             SEARCH RESULTS:
             {results}
             """

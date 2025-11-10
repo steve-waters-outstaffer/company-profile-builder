@@ -10,11 +10,10 @@ logger = logging.getLogger(__name__)
 class ClientBrief(BaseModel):
     """Sales-ready company brief for recruiters."""
     company_name: str = Field(description="Company name")
-    summary: str = Field(description="2-3 sentences: what they do, for whom, and where")
-    positioning: str = Field(description="1-2 sentences: focus/differentiation or products")
-    hiring_context: str = Field(description="1-2 sentences: signals relevant to recruiting today")
-    talking_points: List[str] = Field(description="3-5 bullets tailored for recruiter meeting")
-    tone: str = Field(description="1-3 words describing communication tone")
+    summary: str = Field(description="3-4 sentences covering what they do, who they serve, their market position, and any notable differentiators")
+    hiring_context: str = Field(description="2-3 sentences on current hiring activity, growth signals, or recruitment-relevant insights")
+    key_points: List[str] = Field(description="4-6 conversational bullet points a recruiter can use in a pitch or discovery call")
+    approach: str = Field(description="2-4 words describing how to approach them (e.g., 'Technical and direct', 'Consultative', 'Startup energy')")
     sources_used: List[str] = Field(description="Provenance tags like 'website#about', 'linkedin#description'")
 
 
@@ -54,7 +53,7 @@ class ClientSummaryAgent:
             
             logger.info(
                 f"[CLIENT_SUMMARY_AGENT] Brief created | company: '{company_name}' | "
-                f"summary_len: {len(brief_dict['summary'])} | bullets: {len(brief_dict['talking_points'])} | "
+                f"summary_len: {len(brief_dict['summary'])} | key_points: {len(brief_dict.get('key_points', []))} | "
                 f"sources: {brief_dict['sources_used']}"
             )
             
@@ -104,8 +103,8 @@ class ClientSummaryAgent:
         jobs_brief = f"- openings_count: {jobs_count}\n- sample_titles: {top_titles if top_titles else 'None'}"
         
         prompt = f"""You create factual, concise company briefs for recruiters meeting prospective clients.
-Use ONLY the provided data. Prefer website > LinkedIn > news for positioning.
-No invented claims. Clear, plain, Australian English. Avoid hype unless quoted.
+Use ONLY the provided data. Be direct and useful - avoid marketing fluff unless it's a direct quote.
+Write in clear, conversational Australian English.
 
 COMPANY_NAME: {company_name}
 
@@ -121,15 +120,14 @@ NEWS_SUMMARY:
 JOBS_BRIEF:
 {jobs_brief}
 
-Note: Jobs and News are shown separately in the UI; do not repeat lists. Provide only 1-2 sentences of hiring context if relevant.
+Note: Jobs and News are displayed separately in the UI, so don't repeat those lists here.
 
 Create a ClientBrief with:
-- summary: 2-3 sentences about what they do, for whom, and where
-- positioning: 1-2 sentences on focus/differentiation or products  
-- hiring_context: 1-2 sentences on recruiting-relevant signals
-- talking_points: 3-5 bullet points tailored for recruiter meeting
-- tone: 1-3 words describing their communication style
-- sources_used: tags like 'website#about', 'linkedin#description', 'news#1', 'jobs#count'
+- summary: 3-4 sentences that give a recruiter the full picture - what they do, who they serve, their market position, what makes them different or notable. Make this meaty enough to brief someone who's never heard of them.
+- hiring_context: 2-3 sentences on what's happening with their hiring right now - are they growing? What roles? Any signals about their recruitment needs?
+- key_points: 4-6 conversational bullet points a recruiter can reference in a pitch or discovery call. Think "talking points for a coffee meeting" not "corporate presentation slides"
+- approach: 2-4 words describing how to approach them (e.g., "Technical and direct", "Consultative sell", "Fast-paced startup", "Enterprise formal")
+- sources_used: tags like 'website#about', 'linkedin#description', 'news#summary', 'jobs#listings'
 """
         
         return prompt
@@ -138,18 +136,15 @@ Create a ClientBrief with:
         """Enforce length limits and clean up output."""
         
         if 'summary' in brief_dict:
-            brief_dict['summary'] = brief_dict['summary'][:420]
-        
-        if 'positioning' in brief_dict:
-            brief_dict['positioning'] = brief_dict['positioning'][:240]
+            brief_dict['summary'] = brief_dict['summary'][:600]  # Increased for meatier summary
         
         if 'hiring_context' in brief_dict:
-            brief_dict['hiring_context'] = brief_dict['hiring_context'][:240]
+            brief_dict['hiring_context'] = brief_dict['hiring_context'][:400]  # Slightly more room
         
-        if 'talking_points' in brief_dict:
-            brief_dict['talking_points'] = [
-                bullet[:140] 
-                for bullet in brief_dict['talking_points'][:5]
+        if 'key_points' in brief_dict:
+            brief_dict['key_points'] = [
+                bullet[:180] 
+                for bullet in brief_dict['key_points'][:6]
                 if bullet.strip()
             ]
         
@@ -172,9 +167,8 @@ Create a ClientBrief with:
         return {
             "company_name": company_name,
             "summary": summary,
-            "positioning": "Information unavailable",
             "hiring_context": "No current hiring signals available",
-            "talking_points": ["Company profile available for review"],
-            "tone": "neutral",
+            "key_points": ["Company profile available for review"],
+            "approach": "Standard",
             "sources_used": ["linkedin#basic"] if linkedin_data else []
         }

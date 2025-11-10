@@ -1,12 +1,12 @@
 import logging
 import time
+import json
+import requests
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import config
 from langchain_tavily import TavilySearch
 from langchain_google_genai import ChatGoogleGenerativeAI
-# NEW IMPORT
-from firecrawl import FirecrawlApp
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +24,6 @@ class JobsDiscoveryAgent:
         self.firecrawl_api_key = firecrawl_api_key
         self.tavily_api_key = tavily_api_key
         self.llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_NAME)
-
-        # Initialize standard FirecrawlApp client
-        # This client automatically handles polling for async jobs.
-        self.firecrawl = FirecrawlApp(api_key=self.firecrawl_api_key)
-
         self.tavily = TavilySearch(max_results=5, api_key=tavily_api_key)
         logger.info("[JOBS_AGENT] Initialized")
 
@@ -65,7 +60,9 @@ class JobsDiscoveryAgent:
         try:
             logger.info(f"[JOBS_AGENT] Tavily search starting | company: '{company_name}' | query: '{query}'")
             results = self.tavily.invoke(query)
-            logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {len(results) if isinstance(results, list) else 'N/A'}")
+            results_count = len(results) if isinstance(results, list) else 'N/A'
+            logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {results_count}")
+            logger.info(f"[JOBS_AGENT] Tavily raw results | company: '{company_name}' | results: {results}")
 
             prompt = f"""You are an expert recruiter finding the direct link to apply for jobs at {company_name}.
             Analyze the search results and select the BEST URL that directly lists currently open positions.
@@ -85,6 +82,8 @@ class JobsDiscoveryAgent:
 
             Return the single best URL and your reasoning based on the priority above."""
 
+            logger.info(f"[JOBS_AGENT] LLM prompt | company: '{company_name}' | prompt_length: {len(prompt)}")
+            
             structured_llm = self.llm.with_structured_output(CareersURL)
             result = structured_llm.invoke(prompt)
 
@@ -100,79 +99,116 @@ class JobsDiscoveryAgent:
             return None
 
     def _extract_jobs(self, source_url: str) -> List[Dict]:
-        logger.info(f"[JOBS_AGENT] Starting Firecrawl SDK extraction | url: {source_url}")
-        try:
-            schema = {
-                "type": "object",
-                "properties": {
-                    "jobs": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "location": {"type": "string"},
-                                "url": {"type": "string"},
-                                "posted_date": {"type": "string"}
-                            },
-                            "required": ["title", "url"]
-                        }
+        """
+        Extracts jobs using the raw API POST/GET polling method that
+        was confirmed to work in test_firecrawl.py.
+        """
+        logger.info(f"[JOBS_AGENT] Starting RAW API extract w/ polling | url: {source_url}")
+
+        # --- Use the exact schema & prompt from the successful test ---
+        schema = {
+            "type": "object",
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "location": {"type": "string"},
+                            "url": {"type": "string"}
+                        },
+                        "required": ["title", "location"]
                     }
-                },
-                "required": ["jobs"]
-            }
+                }
+            },
+            "required": ["jobs"]
+        }
 
-            # Use the prompt that worked in Playground
-            playground_prompt = (
-                "Extract all individual job postings. Required fields: 'title' (must be the specific role name, "
-                "strictly AVOID using locations like 'Remote' or 'New York' as the title), 'location', and 'url' "
-                "(direct link to apply). Optional fields: 'posted_date' and 'description' (Short summary of the role). "
-                "Ignore general page text."
-            )
+        prompt = "Extract all individual job postings. Required fields: 'title' (must be the specific role name, strictly AVOID using locations like 'Remote' or 'New York' as the title), 'location', and 'url' (direct link to apply). Optional fields: 'posted_date' and 'description' (Short summary of the role). Ignore general page text."
 
-            params = {
-                'prompt': playground_prompt,
-                'schema': schema
-            }
+        # --- STEP 1: POST to start the job (Raw API call) ---
+        post_url = "https://api.firecrawl.dev/v2/extract"
+        headers = {
+            "Authorization": f"Bearer {self.firecrawl_api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "urls": [source_url],
+            "prompt": prompt,
+            "schema": schema
+        }
 
-            # The SDK's scrape_url (with extract format) OR extract methods
-            # generally handle polling if the job goes async.
-            # We use 'extract' here as it matches your playground usage.
-            logger.info(f"[JOBS_AGENT] Calling Firecrawl SDK... this may take time if polling is needed.")
+        job_id = None
+        try:
+            logger.info(f"[JOBS_AGENT] Submitting job to {post_url}...")
+            response = requests.post(post_url, headers=headers, data=json.dumps(payload), timeout=10)
+            response.raise_for_status()
 
-            # NOTE: SDK might take 60s+ if it has to poll. Ensure your Cloud Run timeout handles this.
-            result = self.firecrawl.extract(
-                [source_url],
-                params=params
-            )
+            post_data = response.json()
+            job_id = post_data.get('id')
 
-            # SDK usually returns the final data structure directly if successful.
-            # It might look like: {'success': True, 'data': {'jobs': [...]}}
-            # OR it might be a list of results if you passed a list of URLs.
+            if not job_id:
+                logger.error(f"[JOBS_AGENT] Error: API did not return a 'id'. Response: {post_data}")
+                return []
 
-            logger.info(f"[JOBS_AGENT] RAW SDK RESULT: {result}") # Keep this for one run to confirm structure
-
-            jobs_data = []
-            # Handle potential different return structures from SDK
-            if isinstance(result, dict):
-                if 'data' in result and 'jobs' in result['data']:
-                    jobs_data = result['data']['jobs']
-                elif 'jobs' in result:
-                    # rare case where it unwrap data
-                    jobs_data = result['jobs']
-            elif isinstance(result, list) and len(result) > 0:
-                # If it returns a list of results (one per URL)
-                jobs_data = result[0].get('data', {}).get('jobs', [])
-
-            valid_jobs = [
-                {**job, 'url': job.get('url', source_url)}
-                for job in jobs_data
-                if job.get('title')
-            ]
-
-            logger.info(f"[JOBS_AGENT] Extraction SUCCESS | url: {source_url} | valid_count: {len(valid_jobs)}")
-            return valid_jobs
+            logger.info(f"[JOBS_AGENT] Job submitted successfully! Job ID: {job_id}")
 
         except Exception as e:
-            logger.error(f"[JOBS_AGENT] SDK Extraction ERROR | url: {source_url} | error: {str(e)}", exc_info=True)
+            logger.error(f"[JOBS_AGENT] Error submitting job | error: {str(e)}", exc_info=True)
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Response Body: {e.response.text}")
             return []
+
+        # --- STEP 2: GET to poll for results (Raw API call) ---
+        get_url = f"https://api.firecrawl.dev/v2/extract/{job_id}"
+        get_headers = {"Authorization": f"Bearer {self.firecrawl_api_key}"}
+
+        max_retries = 20  # 20 * 5s = 100s timeout
+        for attempt in range(max_retries):
+            logger.info(f"[JOBS_AGENT] Polling attempt {attempt + 1}/{max_retries} | Job ID: {job_id}")
+            try:
+                time.sleep(5) # Wait *before* polling (except first time, which we do)
+
+                response = requests.get(get_url, headers=get_headers, timeout=10)
+                response.raise_for_status()
+
+                status_data = response.json()
+                status = status_data.get('status')
+
+                logger.info(f"[JOBS_AGENT] Current status: {status}")
+
+                if status == 'completed':
+                    logger.info(f"[JOBS_AGENT] Job completed! | Job ID: {job_id}")
+
+                    final_data = status_data.get('data', {})
+                    jobs_data = final_data.get('jobs', [])
+
+                    if jobs_data:
+                        logger.info(f"📊 Successfully found {len(jobs_data)} jobs.")
+                    else:
+                        logger.warning("⚠️  Job completed but 'jobs' array was empty or missing.")
+
+                    # Filter out any lingering jobs without a title, just in case
+                    valid_jobs = [
+                        {**job, 'url': job.get('url', source_url)}
+                        for job in jobs_data
+                        if job.get('title') and job.get('url')
+                    ]
+                    logger.info(f"[JOBS_AGENT] Returning {len(valid_jobs)} valid jobs.")
+                    return valid_jobs
+
+                elif status == 'failed' or status == 'cancelled':
+                    logger.error(f"[JOBS_AGENT] Job {status}. Halting. | Job ID: {job_id} | Response: {status_data}")
+                    return []
+
+                # If 'processing', loop continues...
+
+            except Exception as e:
+                logger.error(f"[JOBS_AGENT] Error polling job status | error: {str(e)}", exc_info=True)
+                if hasattr(e, 'response') and e.response:
+                    logger.error(f"Response Body: {e.response.text}")
+                # Continue polling even if one request fails
+
+        logger.error(f"[JOBS_AGENT] Job timed out after 100s. | Job ID: {job_id}")
+        return []
