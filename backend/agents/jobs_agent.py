@@ -1,19 +1,19 @@
 import logging
-import requests
+import time
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 import config
 from langchain_tavily import TavilySearch
 from langchain_google_genai import ChatGoogleGenerativeAI
+# NEW IMPORT
+from firecrawl import FirecrawlApp
 
 logger = logging.getLogger(__name__)
-
 
 class CareersURL(BaseModel):
     """Schema for LLM to return the best careers page URL."""
     url: str = Field(description="The best careers/jobs page URL from the search results")
     reasoning: str = Field(description="Brief explanation of why this is the best match")
-
 
 class JobsDiscoveryAgent:
     """
@@ -24,14 +24,15 @@ class JobsDiscoveryAgent:
         self.firecrawl_api_key = firecrawl_api_key
         self.tavily_api_key = tavily_api_key
         self.llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_NAME)
-        self.base_url = "https://api.firecrawl.dev/v2"
-        self.headers = {
-            "Authorization": f"Bearer {self.firecrawl_api_key}",
-            "Content-Type": "application/json"
-        }
+
+        # Initialize standard FirecrawlApp client
+        # This client automatically handles polling for async jobs.
+        self.firecrawl = FirecrawlApp(api_key=self.firecrawl_api_key)
+
         self.tavily = TavilySearch(max_results=5, api_key=tavily_api_key)
         logger.info("[JOBS_AGENT] Initialized")
 
+    # ... [keep your existing discover_jobs method unchanged] ...
     def discover_jobs(self, company_name: str, company_url: Optional[str]) -> Dict:
         """Main entry point for job discovery."""
         logger.info(f"[JOBS_AGENT] Starting job discovery | company: '{company_name}' | url: '{company_url}'")
@@ -54,23 +55,18 @@ class JobsDiscoveryAgent:
             logger.error(f"[JOBS_AGENT] ERROR | company: '{company_name}' | error: {str(e)}", exc_info=True)
             return {"job_listings": [], "error": str(e)}
 
+    # ... [keep your existing _find_careers_page method unchanged] ...
     def _find_careers_page(self, company_name: str, company_url: Optional[str]) -> Optional[str]:
         logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}'")
 
-        # 1. Tighter Search Query
-        # Focus on "listings" and "openings" to avoid generic corporate pages.
-        # If we have a URL, we still prefer a broad search first, as many modern companies
-        # host jobs on subdomains (jobs.company.com) or ATS (greenhouse.io)
-        # which a 'site:' operator might sometimes miss if strictly applied.
+        # Use the tighter query that worked for you
         query = f"{company_name} official careers page job openings listings"
 
         try:
             logger.info(f"[JOBS_AGENT] Tavily search starting | company: '{company_name}' | query: '{query}'")
             results = self.tavily.invoke(query)
-            # ... (keep your existing logging) ...
+            logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {len(results) if isinstance(results, list) else 'N/A'}")
 
-            # 2. Stricter LLM Prompt (The Magic Fix)
-            # explicitly tells it standard patterns to look for and what to avoid.
             prompt = f"""You are an expert recruiter finding the direct link to apply for jobs at {company_name}.
             Analyze the search results and select the BEST URL that directly lists currently open positions.
 
@@ -91,9 +87,9 @@ class JobsDiscoveryAgent:
 
             structured_llm = self.llm.with_structured_output(CareersURL)
             result = structured_llm.invoke(prompt)
-            
+
             logger.info(f"[JOBS_AGENT] LLM selection | company: '{company_name}' | url: {result.url} | reasoning: {result.reasoning}")
-            
+
             if result.url and result.url.startswith('http'):
                 return result.url
             else:
@@ -104,9 +100,8 @@ class JobsDiscoveryAgent:
             return None
 
     def _extract_jobs(self, source_url: str) -> List[Dict]:
-        logger.info(f"[JOBS_AGENT] Starting Firecrawl extraction | url: {source_url}")
+        logger.info(f"[JOBS_AGENT] Starting Firecrawl SDK extraction | url: {source_url}")
         try:
-            # ... [KEEP YOUR SCHEMA AND PROMPT THE SAME AS BEFORE] ...
             schema = {
                 "type": "object",
                 "properties": {
@@ -127,55 +122,57 @@ class JobsDiscoveryAgent:
                 "required": ["jobs"]
             }
 
-            payload = {
-                "urls": [source_url],
-                "schema": schema,
-                "prompt": "Extract all individual job postings. Required fields: 'title' (must be the specific role name, strictly AVOID using locations like 'Remote' or 'New York' as the title), 'location', and 'url' (direct link to apply). Optional fields: 'posted_date' and 'description' (Short summary of the role). Ignore general page text."
-            }
-
-            logger.info(f"[JOBS_AGENT] Calling Firecrawl API | url: {source_url}")
-
-            # --- NUCLEAR DEBUG LOGGING ---
-            logger.info(f"[JOBS_AGENT] DEBUG: API Key starts with: {self.firecrawl_api_key[:4]}...") # Verify key is actually loaded
-
-            response = requests.post(
-                f"{self.base_url}/extract",
-                json=payload,
-                headers=self.headers,
-                timeout=60
+            # Use the prompt that worked in Playground
+            playground_prompt = (
+                "Extract all individual job postings. Required fields: 'title' (must be the specific role name, "
+                "strictly AVOID using locations like 'Remote' or 'New York' as the title), 'location', and 'url' "
+                "(direct link to apply). Optional fields: 'posted_date' and 'description' (Short summary of the role). "
+                "Ignore general page text."
             )
 
-            # Log RAW details before ANY parsing
-            logger.info(f"[JOBS_AGENT] DEBUG: Status Code: {response.status_code}")
-            logger.info(f"[JOBS_AGENT] DEBUG: Raw Response Text: {response.text}")
-            # -----------------------------
+            params = {
+                'prompt': playground_prompt,
+                'schema': schema
+            }
 
-            if response.ok:
-                try:
-                    data = response.json().get('data', {})
-                except Exception as json_e:
-                    logger.error(f"[JOBS_AGENT] FATAL: Response was OK but not valid JSON: {json_e}")
-                    return []
+            # The SDK's scrape_url (with extract format) OR extract methods
+            # generally handle polling if the job goes async.
+            # We use 'extract' here as it matches your playground usage.
+            logger.info(f"[JOBS_AGENT] Calling Firecrawl SDK... this may take time if polling is needed.")
 
-                if isinstance(data, list) and len(data) > 0:
-                    jobs_data = data[0].get('jobs', [])
-                elif isinstance(data, dict):
-                    jobs_data = data.get('jobs', [])
-                else:
-                    jobs_data = []
+            # NOTE: SDK might take 60s+ if it has to poll. Ensure your Cloud Run timeout handles this.
+            result = self.firecrawl.extract(
+                [source_url],
+                params=params
+            )
 
-                valid_jobs = [
-                    {**job, 'url': job.get('url', source_url)}
-                    for job in jobs_data
-                    if job.get('title')
-                ]
+            # SDK usually returns the final data structure directly if successful.
+            # It might look like: {'success': True, 'data': {'jobs': [...]}}
+            # OR it might be a list of results if you passed a list of URLs.
 
-                logger.info(f"[JOBS_AGENT] Extraction SUCCESS | url: {source_url} | raw_count: {len(jobs_data)} | valid_count: {len(valid_jobs)}")
-                return valid_jobs
-            else:
-                logger.error(f"[JOBS_AGENT] Firecrawl extraction FAILED | url: {source_url} | status: {response.status_code} | response: {response.text}")
-                return []
+            logger.info(f"[JOBS_AGENT] RAW SDK RESULT: {result}") # Keep this for one run to confirm structure
+
+            jobs_data = []
+            # Handle potential different return structures from SDK
+            if isinstance(result, dict):
+                if 'data' in result and 'jobs' in result['data']:
+                    jobs_data = result['data']['jobs']
+                elif 'jobs' in result:
+                    # rare case where it unwrap data
+                    jobs_data = result['jobs']
+            elif isinstance(result, list) and len(result) > 0:
+                # If it returns a list of results (one per URL)
+                jobs_data = result[0].get('data', {}).get('jobs', [])
+
+            valid_jobs = [
+                {**job, 'url': job.get('url', source_url)}
+                for job in jobs_data
+                if job.get('title')
+            ]
+
+            logger.info(f"[JOBS_AGENT] Extraction SUCCESS | url: {source_url} | valid_count: {len(valid_jobs)}")
+            return valid_jobs
 
         except Exception as e:
-            logger.error(f"[JOBS_AGENT] Extraction ERROR | url: {source_url} | error: {str(e)}", exc_info=True)
+            logger.error(f"[JOBS_AGENT] SDK Extraction ERROR | url: {source_url} | error: {str(e)}", exc_info=True)
             return []
