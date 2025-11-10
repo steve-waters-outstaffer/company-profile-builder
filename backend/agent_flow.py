@@ -1,8 +1,7 @@
 # agent_flow.py
 import logging
-from typing import TypedDict, List, Optional, Any, Dict
+from typing import TypedDict, List, Optional, Dict
 from langgraph.graph import StateGraph, END
-from google.cloud import logging as cloud_logging
 import config
 
 from agents.linkedin_agent import LinkedInAgent
@@ -10,15 +9,7 @@ from agents.news_agent import NewsAgent
 from agents.jobs_agent import JobsDiscoveryAgent
 from agents.client_summary_agent import ClientSummaryAgent
 
-# Setup Cloud Logging
-try:
-    client = cloud_logging.Client()
-    client.setup_logging()
-    logger = logging.getLogger(__name__)
-except Exception as e:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Cloud logging unavailable: {e}")
+logger = logging.getLogger(__name__)
 
 # --- State Definition ---
 class AgentState(TypedDict):
