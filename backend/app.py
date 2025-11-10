@@ -2,24 +2,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from agent_flow import get_research_graph
+from logging_config import get_logger
 import config
 import datetime
 import os
 import json
-import logging
 
-from google.cloud import firestore, tasks_v2, logging as cloud_logging
+from google.cloud import firestore, tasks_v2
 from google.protobuf import timestamp_pb2
 
-# Setup Cloud Logging
-try:
-    client = cloud_logging.Client()
-    client.setup_logging()
-    logger = logging.getLogger(__name__)
-except Exception as e:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Cloud logging unavailable: {e}")
+logger = get_logger(__name__)
 
 app = Flask(__name__)
 
