@@ -315,3 +315,150 @@ a:hover {
   color: #555;
   margin: 0 0 8px 0;
 }
+
+/* === Visual Fork Workflow Styles === */
+
+.workflow-container {
+  background: #fdfdfd;
+  border: 1px solid #eee;
+  padding: 20px;
+  border-radius: 8px;
+  margin-top: 30px;
+}
+
+.workflow-container h3 {
+  margin-top: 0;
+  color: #333;
+  margin-bottom: 20px;
+}
+
+.workflow-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+/* Parallel Fork Visualization */
+.parallel-fork {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 20px 0;
+  position: relative;
+}
+
+.fork-line {
+  width: 3px;
+  height: 30px;
+  background: linear-gradient(to bottom, #4CAF50, #2196F3);
+  margin-bottom: 10px;
+}
+
+.fork-branches {
+  display: flex;
+  gap: 40px;
+  width: 100%;
+  justify-content: center;
+  position: relative;
+  padding: 20px 0;
+}
+
+.fork-branches::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80%;
+  height: 3px;
+  background: linear-gradient(to right, #2196F3 0%, #2196F3 48%, transparent 48%, transparent 52%, #FF9800 52%, #FF9800 100%);
+}
+
+.branch-container {
+  flex: 1;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  padding: 10px;
+  background: white;
+  border-radius: 8px;
+  border: 2px solid #eee;
+}
+
+.branch-container:first-child {
+  border-left: 3px solid #2196F3;
+}
+
+.branch-container:last-child {
+  border-left: 3px solid #FF9800;
+}
+
+.parallel-step {
+  padding-left: 10px;
+}
+
+.merge-line {
+  width: 3px;
+  height: 30px;
+  background: linear-gradient(to bottom, #2196F3, #4CAF50);
+  margin-top: 10px;
+}
+
+/* Step status indicators */
+.step-item {
+  font-size: 16px;
+  color: #888;
+  display: flex;
+  align-items: center;
+  transition: all 0.3s ease;
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+.step-item .step-icon {
+  margin-right: 12px;
+  font-size: 20px;
+  line-height: 1;
+  min-width: 24px;
+}
+
+.step-item.step-current {
+  color: #222;
+  font-weight: bold;
+  background: #fff9c4;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.step-item.step-complete {
+  color: #1a9c20;
+  font-weight: 500;
+  background: #f1f8e9;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    background: #fff9c4;
+  }
+  50% {
+    background: #ffeb3b;
+  }
+}
+
+/* Responsive design for smaller screens */
+@media (max-width: 768px) {
+  .fork-branches {
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .fork-branches::before {
+    display: none;
+  }
+
+  .branch-container {
+    max-width: 100%;
+  }
+}

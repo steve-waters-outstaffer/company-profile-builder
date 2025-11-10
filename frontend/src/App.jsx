@@ -18,14 +18,23 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 // The steps we expect from the backend agent_flow.py
-const ALL_STEPS = [
-  { id: 'start', label: 'Starting research...' },
-  { id: 'find_linkedin_url', label: 'Finding LinkedIn Profile' },
-  { id: 'scrape_linkedin', label: 'Scraping LinkedIn Data' },
-  { id: 'find_jobs_and_news', label: 'Finding Careers Page & News' },
-  { id: 'scrape_careers_page', label: 'Scraping Careers Page' },
-  { id: 'generate_final_report', label: 'Generating Final Report' }
-];
+// Define the workflow structure with parallel branches
+const WORKFLOW_STEPS = {
+  linear: [
+    { id: 'start', label: 'Starting research...' },
+    { id: 'find_linkedin_url', label: 'Finding LinkedIn Profile' },
+    { id: 'scrape_linkedin', label: 'Scraping LinkedIn Data' },
+    { id: 'scrape_about_page', label: 'Scraping Company About Page' },
+    { id: 'parallel_research_coordinator', label: 'Starting parallel research...' }
+  ],
+  parallel: [
+    { id: 'find_news', label: 'Finding Recent News', branch: 'news' },
+    { id: 'discover_jobs', label: 'Discovering Job Openings', branch: 'jobs' }
+  ],
+  final: [
+    { id: 'generate_final_report', label: 'Generating Final Report' }
+  ]
+};
 
 function App() {
   const [companyInput, setCompanyInput] = useState('');
@@ -146,19 +155,83 @@ function App() {
       </form>
 
       {isLoading && (
-        <div className="steps-container">
+        <div className="workflow-container">
           <h3>Working on it...</h3>
-          {ALL_STEPS.map((step, idx) => {
-            const isComplete = completedSteps.includes(step.id);
-            const isCurrent = !isComplete && idx === completedSteps.length;
+          
+          {/* Linear steps */}
+          <div className="workflow-section">
+            {WORKFLOW_STEPS.linear.map((step) => {
+              const isComplete = completedSteps.includes(step.id);
+              const isCurrent = !isComplete && !completedSteps.some(s => 
+                WORKFLOW_STEPS.linear.indexOf(WORKFLOW_STEPS.linear.find(st => st.id === s)) > 
+                WORKFLOW_STEPS.linear.indexOf(step)
+              );
 
-            return (
-              <div key={step.id} className={`step-item ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
-                <span className="step-icon">{isComplete ? '✅' : '...'}</span>
-                {step.label}
+              return (
+                <div key={step.id} className={`step-item ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
+                  <span className="step-icon">{isComplete ? '✅' : '...'}</span>
+                  {step.label}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Visual fork indicator */}
+          {completedSteps.includes('parallel_research_coordinator') && (
+            <div className="parallel-fork">
+              <div className="fork-line"></div>
+              <div className="fork-branches">
+                {/* News branch */}
+                <div className="branch-container">
+                  {WORKFLOW_STEPS.parallel.filter(s => s.branch === 'news').map((step) => {
+                    const isComplete = completedSteps.includes(step.id);
+                    const isCurrent = !isComplete && completedSteps.includes('parallel_research_coordinator');
+
+                    return (
+                      <div key={step.id} className={`step-item parallel-step ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
+                        <span className="step-icon">{isComplete ? '✅' : '...'}</span>
+                        {step.label}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Jobs branch */}
+                <div className="branch-container">
+                  {WORKFLOW_STEPS.parallel.filter(s => s.branch === 'jobs').map((step) => {
+                    const isComplete = completedSteps.includes(step.id);
+                    const isCurrent = !isComplete && completedSteps.includes('parallel_research_coordinator');
+
+                    return (
+                      <div key={step.id} className={`step-item parallel-step ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
+                        <span className="step-icon">{isComplete ? '✅' : '...'}</span>
+                        {step.label}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            );
-          })}
+              <div className="merge-line"></div>
+            </div>
+          )}
+
+          {/* Final step - only show after parallel branches complete */}
+          {(completedSteps.includes('find_news') || completedSteps.includes('discover_jobs')) && (
+            <div className="workflow-section">
+              {WORKFLOW_STEPS.final.map((step) => {
+                const isComplete = completedSteps.includes(step.id);
+                const bothParallelComplete = completedSteps.includes('find_news') && completedSteps.includes('discover_jobs');
+                const isCurrent = !isComplete && bothParallelComplete;
+
+                return (
+                  <div key={step.id} className={`step-item ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
+                    <span className="step-icon">{isComplete ? '✅' : '...'}</span>
+                    {step.label}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -201,6 +274,13 @@ function App() {
             <p>{reportData.description}</p>
           </div>
 
+          {reportData.recent_news_summary && (
+            <div className="report-section">
+              <h3>Recent News</h3>
+              <p>{reportData.recent_news_summary}</p>
+            </div>
+          )}
+
           {reportData.specialties && reportData.specialties.length > 0 && (
             <div className="report-section">
               <h3>Specialties</h3>
@@ -226,9 +306,10 @@ function App() {
             </div>
           )}
 
-          {reportData.job_openings && reportData.job_openings.length > 0 && (
-            <div className="report-section">
-              <h3>Job Openings ({reportData.job_openings.length} positions)</h3>
+          {/* Job Openings - Always show, even if empty */}
+          <div className="report-section">
+            <h3>Job Openings ({reportData.job_openings?.length || 0} positions)</h3>
+            {reportData.job_openings && reportData.job_openings.length > 0 ? (
               <details open={reportData.job_openings.length <= 10}>
                 <summary className="jobs-summary">
                   {reportData.job_openings.length <= 10 ? 'View all positions' : 'Click to expand/collapse job listings'}
@@ -242,8 +323,12 @@ function App() {
                   ))}
                 </ul>
               </details>
-            </div>
-          )}
+            ) : (
+              <p style={{ fontStyle: 'italic', color: '#666' }}>
+                No job openings found. The company may not have a public careers page, or jobs may need to be checked manually on their website.
+              </p>
+            )}
+          </div>
 
           {reportData.employees && reportData.employees.length > 0 && (
             <div className="report-section">
@@ -268,13 +353,6 @@ function App() {
               <p><strong>Type:</strong> {reportData.funding.lastRound.type}</p>
               {reportData.funding.lastRound.date && <p><strong>Date:</strong> {reportData.funding.lastRound.date}</p>}
               {reportData.funding.lastRound.amount && <p><strong>Amount:</strong> {reportData.funding.lastRound.amount}</p>}
-            </div>
-          )}
-
-          {reportData.recent_news_summary && (
-            <div className="report-section">
-              <h3>Recent News</h3>
-              <p>{reportData.recent_news_summary}</p>
             </div>
           )}
 
