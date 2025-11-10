@@ -37,7 +37,7 @@ def init_node(state: AgentState):
         # (You might want better logic here or let the agents handle it)
     return state
 
-def company_profile_nodewx(state: AgentState):
+def company_profile_node(state: AgentState):
     agent = LinkedInAgent()
     # Delegate all profile gathering logic to the agent
     data = agent.get_company_data(state['company_name'], state.get('provided_url'))
