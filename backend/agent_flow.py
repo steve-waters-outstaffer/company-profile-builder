@@ -13,35 +13,38 @@ logger = logging.getLogger(__name__)
 
 # --- State Definition ---
 class AgentState(TypedDict):
-    initial_input: str
-    provided_url: Optional[str]
     company_name: str
+    url: Optional[str]
+    url_type: Optional[str]  # 'website' | 'linkedin' | None
     website_url: Optional[str]
     linkedin_data: dict
     recent_news_summary: str
     job_openings: List[dict]
     data_source: str
-    client_brief: Dict  # NEW
+    client_brief: Dict
 
 # --- Nodes ---
 
 def init_node(state: AgentState):
-    """Initialize state based on input."""
-    logger.info(f"[AGENT_FLOW] INIT | input: '{state['initial_input']}' | url: '{state.get('provided_url')}'")
+    """Initialize state - company name and optional URL are already set."""
+    company_name = state.get('company_name')
+    url = state.get('url')
+    url_type = state.get('url_type')
     
-    state['company_name'] = state['initial_input']
+    logger.info(f"[AGENT_FLOW] INIT | company: '{company_name}' | url: '{url}' | url_type: '{url_type}'")
     
-    if state['initial_input'].startswith('http'):
-        state['provided_url'] = state['initial_input']
-        logger.info(f"[AGENT_FLOW] INIT | Detected URL as input | url: {state['initial_input']}")
-    
+    # State is already properly structured from the API
     return state
 
 def company_profile_node(state: AgentState):
     logger.info(f"[AGENT_FLOW] BUILD_PROFILE starting | company: '{state['company_name']}'")
     try:
         agent = LinkedInAgent()
-        data = agent.get_company_data(state['company_name'], state.get('provided_url'))
+        data = agent.get_company_data(
+            state['company_name'], 
+            state.get('url'),
+            state.get('url_type')
+        )
         
         state['linkedin_data'] = data
         state['data_source'] = data.get('data_source', 'none')
@@ -59,7 +62,19 @@ def news_node(state: AgentState):
     logger.info(f"[AGENT_FLOW] GET_NEWS starting | company: '{state['company_name']}'")
     try:
         agent = NewsAgent()
-        state['recent_news_summary'] = agent.get_recent_news_summary(state['company_name'])
+        
+        # Extract location from LinkedIn data if available
+        location = None
+        if state.get('linkedin_data'):
+            headquarters = state['linkedin_data'].get('headquarters')
+            if headquarters:
+                location = headquarters
+        
+        state['recent_news_summary'] = agent.get_recent_news_summary(
+            state['company_name'],
+            location=location,
+            website=state.get('website_url')
+        )
         logger.info(f"[AGENT_FLOW] GET_NEWS complete | company: '{state['company_name']}'")
     except Exception as e:
         logger.error(f"[AGENT_FLOW] GET_NEWS ERROR | company: '{state['company_name']}' | error: {str(e)}", exc_info=True)
@@ -69,18 +84,29 @@ def news_node(state: AgentState):
 def jobs_node(state: AgentState):
     logger.info(f"[AGENT_FLOW] GET_JOBS starting | company: '{state['company_name']}'")
     try:
-        company_url = state.get('website_url') or state.get('provided_url')
+        company_url = state.get('website_url') or state.get('url')
         
         if not company_url:
             logger.warning(f"[AGENT_FLOW] GET_JOBS | No URL available | company: '{state['company_name']}'")
             state['job_openings'] = []
             return state
 
+        # Extract location from LinkedIn data if available
+        location = None
+        if state.get('linkedin_data'):
+            headquarters = state['linkedin_data'].get('headquarters')
+            if headquarters:
+                location = headquarters
+
         agent = JobsDiscoveryAgent(
             firecrawl_api_key=config.FIRECRAWL_API_KEY,
             tavily_api_key=config.TAVILY_API_KEY
         )
-        result = agent.discover_jobs(state['company_name'], company_url)
+        result = agent.discover_jobs(
+            state['company_name'], 
+            company_url,
+            location=location
+        )
         state['job_openings'] = result.get('job_listings', [])
         
         logger.info(f"[AGENT_FLOW] GET_JOBS complete | company: '{state['company_name']}' | jobs_found: {len(state['job_openings'])}")

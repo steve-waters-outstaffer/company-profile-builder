@@ -25,6 +25,8 @@ if [ -z "$SERVICE_ACCOUNT_EMAIL" ]; then
     exit 1
 fi
 
+gcloud config set account steve.waters@outstaffer.com
+
 echo "🚀 Deploying Backend to Google Cloud Run..."
 echo "📍 Project: $PROJECT_ID"
 echo "⚙️  Service: $SERVICE_NAME"
@@ -49,7 +51,7 @@ gcloud run deploy $SERVICE_NAME \
 if [ $? -eq 0 ]; then
     echo ""
     echo "✅ Backend deployment successful!"
-    echo "🔗 URL: $(gcloud run services describe $SERVICE_NAME --platform=managed --region=$REGION --format='value(status.url)')"
+    echo "🔗 URL: $(gcloud run services describe $SERVICE_NAME --platform=managed --region=$REGION --project=$PROJECT_ID --format='value(status.url)')"
 else
     echo "❌ Backend deployment failed"
     exit 1

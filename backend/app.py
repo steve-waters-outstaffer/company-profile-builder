@@ -44,12 +44,13 @@ CORS(app, resources={
 def start_research():
     try:
         data = request.json
-        user_input = data.get('input')
-        url_input = data.get('url')
+        company_name = data.get('company_name')
+        url = data.get('url')
+        url_type = data.get('url_type')  # 'website' or 'linkedin' or None
         
-        logger.info(f"[START_RESEARCH] Request received | input: '{user_input}' | url: '{url_input}'")
+        logger.info(f"[START_RESEARCH] Request received | company: '{company_name}' | url: '{url}' | url_type: '{url_type}'")
 
-        if not user_input:
+        if not company_name:
             logger.error("[START_RESEARCH] FAILED - No company name provided")
             return jsonify({"error": "No company name provided"}), 400
 
@@ -61,8 +62,9 @@ def start_research():
         job_data = {
             "id": job_id,
             "status": "pending",
-            "input": user_input,
-            "url": url_input,
+            "company_name": company_name,
+            "url": url,
+            "url_type": url_type,
             "steps_complete": [],
             "linkedin_data": None,
             "job_openings": None,
@@ -119,11 +121,12 @@ def run_research_job():
             return "Job not found", 404
 
         job_data = job_snapshot.to_dict()
-        logger.info(f"[RUN_JOB] Job data loaded | job_id: {job_id} | input: '{job_data.get('input')}' | url: '{job_data.get('url')}'")
+        logger.info(f"[RUN_JOB] Job data loaded | job_id: {job_id} | company: '{job_data.get('company_name')}' | url: '{job_data.get('url')}' | url_type: '{job_data.get('url_type')}'")
 
         inputs = {
-            "initial_input": job_data.get("input"),
-            "provided_url": job_data.get("url")
+            "company_name": job_data.get("company_name"),
+            "url": job_data.get("url"),
+            "url_type": job_data.get("url_type")
         }
 
         steps_complete = []

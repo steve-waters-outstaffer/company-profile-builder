@@ -28,13 +28,13 @@ class JobsDiscoveryAgent:
         logger.info("[JOBS_AGENT] Initialized")
 
     # ... [keep your existing discover_jobs method unchanged] ...
-    def discover_jobs(self, company_name: str, company_url: Optional[str]) -> Dict:
+    def discover_jobs(self, company_name: str, company_url: Optional[str], location: Optional[str] = None) -> Dict:
         """Main entry point for job discovery."""
-        logger.info(f"[JOBS_AGENT] Starting job discovery | company: '{company_name}' | url: '{company_url}'")
+        logger.info(f"[JOBS_AGENT] Starting job discovery | company: '{company_name}' | url: '{company_url}' | location: '{location}'")
 
         try:
             # 1. Find careers page
-            careers_url = self._find_careers_page(company_name, company_url)
+            careers_url = self._find_careers_page(company_name, company_url, location)
             if not careers_url:
                 logger.warning(f"[JOBS_AGENT] No careers page found | company: '{company_name}'")
                 return {"job_listings": [], "error": "No careers page found"}
@@ -51,14 +51,18 @@ class JobsDiscoveryAgent:
             return {"job_listings": [], "error": str(e)}
 
     # ... [keep your existing _find_careers_page method unchanged] ...
-    def _find_careers_page(self, company_name: str, company_url: Optional[str]) -> Optional[str]:
-        logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}'")
+    def _find_careers_page(self, company_name: str, company_url: Optional[str], location: Optional[str] = None) -> Optional[str]:
+        logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}' | location: '{location}'")
 
-        # Use the tighter query that worked for you
+        # Build targeted query with location context
         query = f"{company_name} official careers page job openings listings"
+        
+        # Add location to make search more specific
+        if location:
+            query += f" {location}"
 
         try:
-            logger.info(f"[JOBS_AGENT] Tavily search starting | company: '{company_name}' | query: '{query}'")
+            logger.info(f"[JOBS_AGENT] Tavily search starting | query: '{query}'")
             results = self.tavily.invoke(query)
             results_count = len(results) if isinstance(results, list) else 'N/A'
             logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {results_count}")

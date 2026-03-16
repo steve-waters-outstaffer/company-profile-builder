@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 import config
@@ -12,11 +13,18 @@ class NewsAgent:
         self.tavily = TavilySearch(max_results=5, api_key=config.TAVILY_API_KEY)
         logger.info("[NEWS_AGENT] Initialized")
 
-    def get_recent_news_summary(self, company_name: str) -> str:
-        logger.info(f"[NEWS_AGENT] Starting news search | company: '{company_name}'")
+    def get_recent_news_summary(self, company_name: str, location: Optional[str] = None, website: Optional[str] = None) -> str:
+        logger.info(f"[NEWS_AGENT] Starting news search | company: '{company_name}' | location: '{location}'")
         try:
-            query = f"recent news 2024 2025 for {company_name} -site:linkedin.com"
-            logger.info(f"[NEWS_AGENT] Tavily search starting | company: '{company_name}'")
+            # Build targeted query with location context
+            query = f"recent news 2024 2025 for {company_name}"
+            
+            # Add location to make search more specific
+            if location:
+                query += f" {location}"
+            
+
+            logger.info(f"[NEWS_AGENT] Tavily search starting | query: '{query}'")
             results = self.tavily.invoke(query)
             logger.info(f"[NEWS_AGENT] Tavily search complete | company: '{company_name}'")
 

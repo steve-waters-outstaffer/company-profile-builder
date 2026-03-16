@@ -1,4 +1,6 @@
 import logging
+import json
+import re
 from typing import Dict, Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
@@ -19,90 +21,153 @@ class LinkedInAgent:
         self.tavily = TavilySearch(max_results=3, api_key=config.TAVILY_API_KEY)
         logger.info("[LINKEDIN_AGENT] Initialized")
 
-    def get_company_data(self, company_name: str, provided_url: Optional[str] = None) -> Dict:
-        """Main entry point: tries LinkedIn first, falls back to provided URL or searches for website."""
-        logger.info(f"[LINKEDIN_AGENT] Starting | company: '{company_name}' | provided_url: '{provided_url}'")
-
+    def get_company_data(self, company_name: str, provided_url: Optional[str] = None, url_type: Optional[str] = None) -> Dict:
+        """
+        Main entry point.
+        IMPROVED FLOW:
+        1. If website URL provided, scrape it FIRST to establish ground truth (location, industry).
+        2. Use ground truth to perform a targeted LinkedIn search.
+        3. Merge LinkedIn data (if found) with website data.
+        
+        Args:
+            company_name: Company name (always provided)
+            provided_url: Optional URL (website or LinkedIn)
+            url_type: 'website' | 'linkedin' | None
+        """
+        logger.info(f"[LINKEDIN_AGENT] Starting | company: '{company_name}' | url: '{provided_url}' | url_type: '{url_type}'")
+        
         linkedin_url: Optional[str] = None
         website_url: Optional[str] = None
-
-        # Extract website_url if provided (regardless of type)
+        ground_truth_data: Optional[Dict] = None
+        
+        # --- STEP 1: Classify the Provided URL ---
         if provided_url:
-            provided_url = provided_url.strip()
-            if "linkedin.com/company/" in provided_url:
+            if url_type == 'linkedin':
                 linkedin_url = provided_url
-                logger.info(f"[LINKEDIN_AGENT] LinkedIn URL provided | url: {linkedin_url}")
-            else:
-                # Store as website_url for later fallback
+                logger.info(f"[LINKEDIN_AGENT] LinkedIn URL provided by user | url: {linkedin_url}")
+            elif url_type == 'website':
                 website_url = provided_url
-                logger.info(f"[LINKEDIN_AGENT] Website URL provided | url: {website_url}")
-
-        # ALWAYS try to find LinkedIn URL if we don't have one yet (even if they pasted a website)
+                logger.info(f"[LINKEDIN_AGENT] Website URL provided by user | url: {website_url}")
+            else:
+                # Fallback: guess based on URL content (shouldn't happen with new frontend)
+                if "linkedin.com/company/" in provided_url:
+                    linkedin_url = provided_url
+                else:
+                    website_url = provided_url
+        
+        # --- STEP 2: Scrape Website for Ground Truth (if available) ---
+        if website_url:
+            logger.info(f"[LINKEDIN_AGENT] Scraping provided website for ground truth | url: {website_url}")
+            ground_truth_data = self._scrape_website(company_name, website_url)
+            
+            if ground_truth_data.get("description"):
+                logger.info(f"[LINKEDIN_AGENT] Ground truth established | name: '{ground_truth_data.get('name')}' | HQ: '{ground_truth_data.get('headquarters', 'N/A')}'")
+                
+                # Use verified company name for LinkedIn search
+                company_name = ground_truth_data.get('name', company_name)
+        
+        # --- STEP 3: Find LinkedIn URL ---
         if not linkedin_url:
-            linkedin_url = self._find_linkedin_url(company_name)
-
-        # Try LinkedIn scrape if we have a URL
+            # Build a targeted query if we have ground truth or URL hints
+            custom_query = None
+            if website_url:
+                # Start with site search constrained to LinkedIn company pages
+                custom_query = f'site:linkedin.com/company "{company_name}"'
+                
+                # Add location hint from TLD
+                if ".au" in website_url:
+                    custom_query += " Australia"
+                elif ".uk" in website_url or ".co.uk" in website_url:
+                    custom_query += " UK"
+                elif ".ca" in website_url:
+                    custom_query += " Canada"
+                elif ".nz" in website_url:
+                    custom_query += " New Zealand"
+                
+                # Add industry hint if we successfully extracted it from ground truth
+                if ground_truth_data and ground_truth_data.get("industry") and ground_truth_data["industry"] != "N/A":
+                    custom_query += f" {ground_truth_data['industry']}"
+                
+                logger.info(f"[LINKEDIN_AGENT] Using targeted LinkedIn search | query: '{custom_query}'")
+            
+            linkedin_url = self._find_linkedin_url(company_name, custom_query=custom_query)
+        
+        # --- STEP 4: Scrape LinkedIn and Merge ---
         if linkedin_url:
             logger.info(f"[LINKEDIN_AGENT] Attempting LinkedIn scrape | url: {linkedin_url}")
-            data = self._scrape_linkedin(linkedin_url)
-            if data and data.get("success") is not False:
-                logger.info(f"[LINKEDIN_AGENT] SUCCESS - LinkedIn data retrieved | company: '{company_name}'")
-                return {**data, "data_source": "linkedin"}
-            logger.warning(f"[LINKEDIN_AGENT] LinkedIn scrape failed | company: '{company_name}' | falling back")
-
-        # Fallback 1: Use provided website URL if we have it
-        if website_url:
-            logger.info(f"[LINKEDIN_AGENT] Using provided website URL as fallback | url: {website_url}")
-            return self._scrape_website_fallback(company_name, website_url)
-
-        # Fallback 2: Search for website
-        logger.info(f"[LINKEDIN_AGENT] Searching for website | company: '{company_name}'")
-        website_url = self._find_website_url(company_name)
-
-        if website_url:
-            logger.info(f"[LINKEDIN_AGENT] Found website, using as fallback | url: {website_url}")
-            return self._scrape_website_fallback(company_name, website_url)
-
-        # Everything failed
+            linkedin_data = self._scrape_linkedin(linkedin_url)
+            
+            if linkedin_data and linkedin_data.get("success") is not False:
+                logger.info(f"[LINKEDIN_AGENT] SUCCESS - LinkedIn data retrieved")
+                
+                # If we have ground truth, merge them. LinkedIn generally takes precedence for structured info,
+                # but we ensure website URL is correct.
+                if ground_truth_data:
+                    # Start with website data, overwrite with LinkedIn data
+                    merged_data = {**ground_truth_data, **linkedin_data}
+                    # Ensure the originally provided website is kept if LinkedIn has none or a different one
+                    if website_url:
+                        merged_data['website'] = website_url
+                    merged_data["data_source"] = "linkedin_with_website"
+                    return merged_data
+                
+                return {**linkedin_data, "data_source": "linkedin"}
+            else:
+                logger.warning(f"[LINKEDIN_AGENT] LinkedIn scrape failed, falling back")
+        
+        # --- STEP 5: Fallbacks ---
+        
+        # Fallback 1: Return ground truth if we have it
+        if ground_truth_data:
+            logger.info(f"[LINKEDIN_AGENT] Falling back to website ground truth")
+            ground_truth_data["data_source"] = "website"
+            return ground_truth_data
+        
+        # Fallback 2: If no URL was provided initially, try to find one now
+        if not website_url:
+            logger.info(f"[LINKEDIN_AGENT] No data yet, searching for company website | company: '{company_name}'")
+            found_website_url = self._find_website_url(company_name)
+            if found_website_url:
+                logger.info(f"[LINKEDIN_AGENT] Found website, scraping now | url: {found_website_url}")
+                return self._scrape_website(company_name, found_website_url)
+        
         logger.error(f"[LINKEDIN_AGENT] FAILED - No data sources available | company: '{company_name}'")
         return {"error": "Could not find company data from LinkedIn or website", "data_source": "none"}
 
-    def _find_linkedin_url(self, company_name: str) -> Optional[str]:
+    def _find_linkedin_url(self, company_name: str, custom_query: Optional[str] = None) -> Optional[str]:
         logger.info(f"[LINKEDIN_AGENT] Finding LinkedIn URL | company: '{company_name}'")
-
-        # More specific query to avoid posts and personal profiles
-        query = f'"{company_name}" LinkedIn company page'
-
+        
+        query = custom_query if custom_query else f'site:linkedin.com/company "{company_name}"'
+        
         try:
             results = self.tavily.invoke(query)
             results_count = len(results) if isinstance(results, list) else 'N/A'
             logger.info(f"[LINKEDIN_AGENT] Tavily search complete | company: '{company_name}' | results_count: {results_count}")
             logger.info(f"[LINKEDIN_AGENT] Tavily raw results | company: '{company_name}' | results: {results}")
-
+            
             prompt = (
                 "Find the BEST LinkedIn company page URL from these results.\n"
                 "RULES:\n"
                 "- MUST be a company page (linkedin.com/company/...)\n"
                 "- AVOID personal profiles (linkedin.com/in/...)\n"
                 "- AVOID individual posts (linkedin.com/posts/...)\n"
-                "- If you only see posts or profiles, extract the company slug from post URLs\n"
-                "  Example: from 'linkedin.com/posts/corehesion-pty-ltd_...', extract 'corehesion-pty-ltd'\n"
-                "  and return 'https://www.linkedin.com/company/corehesion-pty-ltd'\n"
-                "Return ONLY the company page URL.\n\n"
+                "- Return ONLY the URL starting with https://\n"
                 f"Results: {results}"
             )
             logger.info(f"[LINKEDIN_AGENT] LLM prompt | company: '{company_name}' | prompt_length: {len(prompt)}")
-
+            
             response = self.llm.invoke(prompt)
             url = response.content.strip()
             logger.info(f"[LINKEDIN_AGENT] LLM response | company: '{company_name}' | response: {url}")
-
-            # Validate it's a company URL
-            if url.startswith("http") and "/company/" in url:
-                logger.info(f"[LINKEDIN_AGENT] LinkedIn URL found | company: '{company_name}' | url: {url}")
-                return url
+            
+            # Basic validation and cleanup using regex
+            match = re.search(r'https://www\.linkedin\.com/company/[\w-]+/?', url)
+            if match:
+                clean_url = match.group(0).rstrip('/')
+                logger.info(f"[LINKEDIN_AGENT] LinkedIn URL found | url: {clean_url}")
+                return clean_url
             else:
-                logger.warning(f"[LINKEDIN_AGENT] No valid LinkedIn company URL found | company: '{company_name}' | got: {url}")
+                logger.warning(f"[LINKEDIN_AGENT] No valid LinkedIn company URL found in LLM response | response: {url}")
                 return None
         except Exception as e:
             logger.error(f"[LINKEDIN_AGENT] Error finding LinkedIn URL | company: '{company_name}' | error: {str(e)}")
@@ -208,8 +273,11 @@ LinkedIn Data:
 
         return linkedin_data
 
-    def _scrape_website_fallback(self, company_name: str, url: str) -> Dict:
-        logger.info(f"[LINKEDIN_AGENT] FALLBACK - Scraping website | company: '{company_name}' | url: {url}")
+    def _scrape_website(self, company_name: str, url: str) -> Dict:
+        """Scrapes website and attempts to extract structured ground truth data."""
+        logger.info(f"[LINKEDIN_AGENT] Scraping website | url: {url}")
+        base_data = {"name": company_name, "url": url, "data_source": "website"}
+        
         try:
             response = requests.post(
                 "https://api.firecrawl.dev/v2/scrape",
@@ -217,32 +285,51 @@ LinkedIn Data:
                 json={"url": url, "onlyMainContent": True, "formats": ["markdown"]},
                 timeout=30,
             )
-
+            
             if response.ok:
                 markdown = response.json().get("data", {}).get("markdown", "")
-                logger.info(f"[LINKEDIN_AGENT] Website scrape SUCCESS | company: '{company_name}' | content_length: {len(markdown)}")
-
+                if not markdown:
+                    logger.warning(f"[LINKEDIN_AGENT] Website scrape returned empty markdown | url: {url}")
+                    return base_data
+                
+                logger.info(f"[LINKEDIN_AGENT] Website content retrieved | url: {url} | length: {len(markdown)}")
+                
+                # Try to extract structured data for ground truth
                 prompt = (
-                    f"Extract a concise JSON with keys: description, industry, headquarters, founded "
-                    f"from this text about {company_name}. Return JSON only.\n"
-                    f"Text: {markdown[:4000]}"
+                    f"Analyze this website text for {company_name}. "
+                    "Extract a JSON object with these exact keys: "
+                    "'description' (2-3 sentence summary), 'industry' (short string), "
+                    "'headquarters' (City, Country format if possible), 'founded' (year). "
+                    "If a field cannot be found, use 'N/A'.\n"
+                    "Return ONLY valid JSON, no markdown formatting.\n\n"
+                    f"Website Text:\n{markdown[:6000]}"
                 )
+                
                 try:
-                    summary = self.llm.invoke(prompt).content
-                    logger.info(f"[LINKEDIN_AGENT] LLM summary generated | company: '{company_name}'")
-                except Exception as e:
-                    logger.warning(f"[LINKEDIN_AGENT] LLM summary failed | company: '{company_name}' | error: {str(e)}")
-                    summary = None
-
-                return {
-                    "name": company_name,
-                    "url": url,
-                    "website_extract": summary or "Extracted from website.",
-                    "data_source": "website",
-                }
+                    llm_response = self.llm.invoke(prompt).content.strip()
+                    
+                    # Clean up common LLM JSON formatting mistakes
+                    clean_json = llm_response.strip()
+                    # Strip markdown code blocks
+                    clean_json = re.sub(r'^```json\s*', '', clean_json)
+                    clean_json = re.sub(r'\s*```$', '', clean_json)
+                    # If LLM added explanation before/after, try to extract just the JSON
+                    json_match = re.search(r'\{.*\}', clean_json, re.DOTALL)
+                    if json_match:
+                        clean_json = json_match.group(0)
+                    
+                    extracted_data = json.loads(clean_json)
+                    
+                    logger.info(f"[LINKEDIN_AGENT] Website structured data extracted successfully | url: {url}")
+                    return {**base_data, **extracted_data, "website": url}
+                    
+                except json.JSONDecodeError as je:
+                    logger.warning(f"[LINKEDIN_AGENT] Failed to parse JSON from website scrape | error: {str(je)}")
+                    # Fallback to just description if JSON fails
+                    return {**base_data, "description": "Failed to extract structured data from website.", "website": url}
             else:
-                logger.error(f"[LINKEDIN_AGENT] Website scrape FAILED | company: '{company_name}' | status: {response.status_code}")
+                logger.error(f"[LINKEDIN_AGENT] Website scrape failed | url: {url} | status: {response.status_code}")
         except Exception as e:
-            logger.error(f"[LINKEDIN_AGENT] Website fallback ERROR | company: '{company_name}' | error: {str(e)}")
-
-        return {"name": company_name, "data_source": "none"}
+            logger.error(f"[LINKEDIN_AGENT] Website scrape error | url: {url} | error: {str(e)}")
+            
+        return {**base_data, "website": url}

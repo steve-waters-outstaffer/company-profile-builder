@@ -28,8 +28,9 @@ const WORKFLOW_STEPS = [
 ];
 
 function App() {
-  const [companyInput, setCompanyInput] = useState('');
-  const [urlInput, setUrlInput] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [url, setUrl] = useState('');
+  const [urlType, setUrlType] = useState('website'); // 'website' or 'linkedin'
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
   const [completedSteps, setCompletedSteps] = useState([]);
@@ -101,7 +102,11 @@ function App() {
       const response = await fetch('https://company-researcher-373126702591.us-central1.run.app/start-research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: companyInput, url: urlInput || null }),
+        body: JSON.stringify({ 
+          company_name: companyName,
+          url: url || null,
+          url_type: url ? urlType : null
+        }),
       });
 
       if (!response.ok) throw new Error('Failed to start research job');
@@ -122,25 +127,58 @@ function App() {
       <h1>Company Profile Builder</h1>
 
       <form onSubmit={handleSubmit} className="search-form">
-        <div className="input-group">
+        {/* Company Name - Always Required */}
+        <div className="form-field">
+          <label htmlFor="companyName">Company Name</label>
           <input
+            id="companyName"
             type="text"
-            value={companyInput}
-            onChange={(e) => setCompanyInput(e.target.value)}
-            placeholder="Company name (required)"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="e.g., Crema Group"
             className="search-input"
             required
             disabled={isLoading}
           />
+        </div>
+
+        {/* URL Section */}
+        <div className="form-field">
+          <div className="url-header">
+            <label>URL (Optional)</label>
+            <div className="url-type-toggle">
+              <button 
+                type="button"
+                className={`toggle-btn ${urlType === 'website' ? 'active' : ''}`}
+                onClick={() => setUrlType('website')}
+                disabled={isLoading}
+              >
+                Website
+              </button>
+              <button 
+                type="button"
+                className={`toggle-btn ${urlType === 'linkedin' ? 'active' : ''}`}
+                onClick={() => setUrlType('linkedin')}
+                disabled={isLoading}
+              >
+                LinkedIn
+              </button>
+            </div>
+          </div>
           <input
             type="text"
-            value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
-            placeholder="Website or LinkedIn URL (optional)"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder={
+              urlType === 'website' 
+                ? 'e.g., https://crema.com.au' 
+                : 'e.g., https://linkedin.com/company/crema-group'
+            }
             className="search-input"
             disabled={isLoading}
           />
         </div>
+        
         <button type="submit" disabled={isLoading} className="search-button">
           {isLoading ? 'Researching...' : 'Research'}
         </button>
