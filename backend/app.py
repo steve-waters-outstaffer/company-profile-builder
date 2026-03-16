@@ -7,6 +7,7 @@ import config
 import datetime
 import os
 import json
+import time
 
 from google.cloud import firestore, tasks_v2
 from google.protobuf import timestamp_pb2
@@ -21,13 +22,14 @@ QUEUE_LOCATION = "us-central1"
 QUEUE_ID = "research-jobs-queue"
 RESEARCH_SERVICE_URL = os.environ.get("CLOUD_RUN_SERVICE_URL")
 FIRESTORE_COLLECTION = "research_jobs"
+RESEARCH_TIMEOUT_SECONDS = 300  # 5 minutes hard timeout
 
 # --- Clients ---
 db = firestore.Client()
 task_client = tasks_v2.CloudTasksClient()
 graph = get_research_graph()
 
-logger.info(f"[STARTUP] Initialized - Project: {PROJECT_ID}, Service URL: {RESEARCH_SERVICE_URL}")
+logger.info(f"[STARTUP] Initialized - Project: {PROJECT_ID}, Service URL: {RESEARCH_SERVICE_URL}, Timeout: {RESEARCH_TIMEOUT_SECONDS}s")
 
 # --- CORS ---
 CORS(app, resources={
@@ -66,6 +68,7 @@ def start_research():
             "url": url,
             "url_type": url_type,
             "steps_complete": [],
+            "step_status": {},  # Track detailed step status
             "linkedin_data": None,
             "job_openings": None,
             "recent_news_summary": None,
@@ -103,6 +106,8 @@ def start_research():
 @app.route('/run-research-job', methods=['POST'])
 def run_research_job():
     job_id = None
+    start_time = time.time()
+    
     try:
         data = request.json
         job_id = data.get('job_id')
@@ -121,29 +126,54 @@ def run_research_job():
             return "Job not found", 404
 
         job_data = job_snapshot.to_dict()
-        logger.info(f"[RUN_JOB] Job data loaded | job_id: {job_id} | company: '{job_data.get('company_name')}' | url: '{job_data.get('url')}' | url_type: '{job_data.get('url_type')}'")
+        logger.info(f"[RUN_JOB] Job data loaded | job_id: {job_id} | company: '{job_data.get('company_name')}'")
 
         inputs = {
             "company_name": job_data.get("company_name"),
             "url": job_data.get("url"),
-            "url_type": job_data.get("url_type")
+            "url_type": job_data.get("url_type"),
+            "step_status": {}  # Initialize step status
         }
 
         steps_complete = []
+        step_status = {}
         final_state = None
+        timeout_hit = False
 
         logger.info(f"[RUN_JOB] Starting graph execution | job_id: {job_id}")
 
+        # Stream through graph with timeout check
         for step in graph.stream(inputs):
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > RESEARCH_TIMEOUT_SECONDS:
+                logger.warning(f"[RUN_JOB] TIMEOUT | job_id: {job_id} | elapsed: {elapsed:.1f}s | steps: {steps_complete}")
+                timeout_hit = True
+                break
+
             step_name = list(step.keys())[0]
             steps_complete.append(step_name)
-            logger.info(f"[RUN_JOB] Step completed | job_id: {job_id} | step: {step_name} | total_steps: {len(steps_complete)}")
-            job_ref.update({"status": "running", "steps_complete": steps_complete})
             final_state = step[step_name]
+            
+            # Extract step status from final_state if available
+            if final_state and 'step_status' in final_state:
+                step_status = final_state['step_status']
+            
+            logger.info(f"[RUN_JOB] Step completed | job_id: {job_id} | step: {step_name} | elapsed: {elapsed:.1f}s | total_steps: {len(steps_complete)}")
+            job_ref.update({
+                "status": "running", 
+                "steps_complete": steps_complete,
+                "step_status": step_status
+            })
 
-        logger.info(f"[RUN_JOB] Graph execution complete | job_id: {job_id} | steps: {steps_complete}")
+        logger.info(f"[RUN_JOB] Graph execution complete/timeout | job_id: {job_id} | steps: {steps_complete} | elapsed: {time.time() - start_time:.1f}s")
 
-        update_data = {"status": "complete", "completed_at": firestore.SERVER_TIMESTAMP}
+        update_data = {
+            "status": "complete" if not timeout_hit else "complete_timeout",
+            "completed_at": firestore.SERVER_TIMESTAMP,
+            "step_status": step_status,
+            "elapsed_seconds": time.time() - start_time
+        }
         
         if final_state:
             if 'linkedin_data' in final_state:
@@ -162,20 +192,26 @@ def run_research_job():
             if 'data_source' in final_state:
                 update_data['data_source'] = final_state['data_source']
                 logger.info(f"[RUN_JOB] Data source | job_id: {job_id} | source: {final_state['data_source']}")
-            if 'careers_page_content' in final_state:
-                update_data['raw_careers_markdown'] = final_state['careers_page_content']
-            if 'recent_news' in final_state:
-                update_data['raw_news_data'] = final_state['recent_news']
+        
+        if timeout_hit:
+            update_data['error'] = f"Research timed out after {RESEARCH_TIMEOUT_SECONDS}s with {len(steps_complete)} steps completed"
+            logger.warning(f"[RUN_JOB] Timeout error saved | job_id: {job_id}")
         
         job_ref.update(update_data)
 
-        logger.info(f"[RUN_JOB] SUCCESS - Job complete | job_id: {job_id}")
+        logger.info(f"[RUN_JOB] SUCCESS - Job complete | job_id: {job_id} | timeout: {timeout_hit}")
         return "Job completed successfully", 200
 
     except Exception as e:
-        logger.error(f"[RUN_JOB] ERROR | job_id: {job_id} | exception: {str(e)}", exc_info=True)
+        elapsed = time.time() - start_time
+        logger.error(f"[RUN_JOB] ERROR | job_id: {job_id} | exception: {str(e)} | elapsed: {elapsed:.1f}s", exc_info=True)
         if job_id:
-            db.collection(FIRESTORE_COLLECTION).document(job_id).update({"status": "error", "error": str(e)})
+            db.collection(FIRESTORE_COLLECTION).document(job_id).update({
+                "status": "error",
+                "error": str(e),
+                "completed_at": firestore.SERVER_TIMESTAMP,
+                "elapsed_seconds": elapsed
+            })
             logger.info(f"[RUN_JOB] Error status saved to Firestore | job_id: {job_id}")
         return "Job failed", 200
 

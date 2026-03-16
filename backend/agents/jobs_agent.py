@@ -17,7 +17,7 @@ class CareersURL(BaseModel):
 
 class JobsDiscoveryAgent:
     """
-    Simplified job discovery agent using Tavily to find careers page, directly followed by Firecrawl Extract.
+    Job discovery with Firecrawl primary (60s timeout) + Tavily hiring search fallback.
     """
 
     def __init__(self, firecrawl_api_key: str = config.FIRECRAWL_API_KEY, tavily_api_key: str = config.TAVILY_API_KEY):
@@ -27,7 +27,6 @@ class JobsDiscoveryAgent:
         self.tavily = TavilySearch(max_results=5, api_key=tavily_api_key)
         logger.info("[JOBS_AGENT] Initialized")
 
-    # ... [keep your existing discover_jobs method unchanged] ...
     def discover_jobs(self, company_name: str, company_url: Optional[str], location: Optional[str] = None) -> Dict:
         """Main entry point for job discovery."""
         logger.info(f"[JOBS_AGENT] Starting job discovery | company: '{company_name}' | url: '{company_url}' | location: '{location}'")
@@ -37,36 +36,31 @@ class JobsDiscoveryAgent:
             careers_url = self._find_careers_page(company_name, company_url, location)
             if not careers_url:
                 logger.warning(f"[JOBS_AGENT] No careers page found | company: '{company_name}'")
-                return {"job_listings": [], "error": "No careers page found"}
+                return {"job_listings": [], "error": "No careers page found", "source": "none"}
 
             # 2. Extract jobs
             logger.info(f"[JOBS_AGENT] Extracting jobs | company: '{company_name}' | careers_url: {careers_url}")
             jobs = self._extract_jobs(careers_url)
             logger.info(f"[JOBS_AGENT] SUCCESS - Jobs extracted | company: '{company_name}' | count: {len(jobs)}")
 
-            return {"job_listings": jobs, "careers_url": careers_url}
+            return {"job_listings": jobs, "careers_url": careers_url, "source": "firecrawl" if jobs else "tavily_fallback"}
 
         except Exception as e:
             logger.error(f"[JOBS_AGENT] ERROR | company: '{company_name}' | error: {str(e)}", exc_info=True)
-            return {"job_listings": [], "error": str(e)}
+            return {"job_listings": [], "error": str(e), "source": "error"}
 
-    # ... [keep your existing _find_careers_page method unchanged] ...
     def _find_careers_page(self, company_name: str, company_url: Optional[str], location: Optional[str] = None) -> Optional[str]:
         logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}' | location: '{location}'")
 
-        # Build targeted query with location context
         query = f"{company_name} official careers page job openings listings"
         
-        # Add location to make search more specific
         if location:
             query += f" {location}"
 
         try:
             logger.info(f"[JOBS_AGENT] Tavily search starting | query: '{query}'")
             results = self.tavily.invoke(query)
-            results_count = len(results) if isinstance(results, list) else 'N/A'
-            logger.info(f"[JOBS_AGENT] Tavily search complete | company: '{company_name}' | results_count: {results_count}")
-            logger.info(f"[JOBS_AGENT] Tavily raw results | company: '{company_name}' | results: {results}")
+            logger.info(f"[JOBS_AGENT] Tavily search complete | results: {len(results) if isinstance(results, list) else 'N/A'}")
 
             prompt = f"""You are an expert recruiter finding the direct link to apply for jobs at {company_name}.
             Analyze the search results and select the BEST URL that directly lists currently open positions.
@@ -86,30 +80,44 @@ class JobsDiscoveryAgent:
 
             Return the single best URL and your reasoning based on the priority above."""
 
-            logger.info(f"[JOBS_AGENT] LLM prompt | company: '{company_name}' | prompt_length: {len(prompt)}")
-            
             structured_llm = self.llm.with_structured_output(CareersURL)
             result = structured_llm.invoke(prompt)
 
-            logger.info(f"[JOBS_AGENT] LLM selection | company: '{company_name}' | url: {result.url} | reasoning: {result.reasoning}")
+            logger.info(f"[JOBS_AGENT] LLM selection | url: {result.url}")
 
             if result.url and result.url.startswith('http'):
                 return result.url
             else:
-                logger.warning(f"[JOBS_AGENT] No valid careers URL found | company: '{company_name}'")
+                logger.warning(f"[JOBS_AGENT] No valid careers URL found")
                 return None
         except Exception as e:
-            logger.error(f"[JOBS_AGENT] Error finding careers page | company: '{company_name}' | error: {str(e)}", exc_info=True)
+            logger.error(f"[JOBS_AGENT] Error finding careers page | error: {str(e)}")
             return None
 
     def _extract_jobs(self, source_url: str) -> List[Dict]:
         """
-        Extracts jobs using the raw API POST/GET polling method that
-        was confirmed to work in test_firecrawl.py.
+        Extracts jobs using Firecrawl with 60s hard timeout.
+        Falls back to Tavily hiring search if Firecrawl fails or times out.
         """
-        logger.info(f"[JOBS_AGENT] Starting RAW API extract w/ polling | url: {source_url}")
+        logger.info(f"[JOBS_AGENT] Starting job extraction | url: {source_url}")
 
-        # --- Use the exact schema & prompt from the successful test ---
+        # Try Firecrawl first (faster, structured)
+        jobs = self._extract_jobs_firecrawl(source_url)
+        if jobs:
+            logger.info(f"[JOBS_AGENT] Firecrawl succeeded | jobs found: {len(jobs)}")
+            return jobs
+
+        # Fallback to Tavily hiring search
+        logger.warning(f"[JOBS_AGENT] Firecrawl failed/timed out, trying Tavily fallback")
+        jobs = self._extract_jobs_tavily_fallback(source_url)
+        logger.info(f"[JOBS_AGENT] Tavily fallback complete | jobs found: {len(jobs)}")
+        return jobs
+
+    def _extract_jobs_firecrawl(self, source_url: str) -> List[Dict]:
+        """
+        Firecrawl extraction with 60s hard timeout (12 retries x 5s).
+        Returns empty list on timeout or error (triggers fallback).
+        """
         schema = {
             "type": "object",
             "properties": {
@@ -131,7 +139,6 @@ class JobsDiscoveryAgent:
 
         prompt = "Extract all jobs. For each job: 'title' is the role name like 'Accountant' or 'Billing Manager', 'location' is where the job is based, 'url' is the apply link."
 
-        # --- STEP 1: POST to start the job (Raw API call) ---
         post_url = "https://api.firecrawl.dev/v2/extract"
         headers = {
             "Authorization": f"Bearer {self.firecrawl_api_key}",
@@ -145,7 +152,7 @@ class JobsDiscoveryAgent:
 
         job_id = None
         try:
-            logger.info(f"[JOBS_AGENT] Submitting job to {post_url}...")
+            logger.info(f"[JOBS_AGENT] Firecrawl: Submitting job")
             response = requests.post(post_url, headers=headers, data=json.dumps(payload), timeout=10)
             response.raise_for_status()
 
@@ -153,66 +160,77 @@ class JobsDiscoveryAgent:
             job_id = post_data.get('id')
 
             if not job_id:
-                logger.error(f"[JOBS_AGENT] Error: API did not return a 'id'. Response: {post_data}")
+                logger.warning(f"[JOBS_AGENT] Firecrawl: No job ID in response")
                 return []
 
-            logger.info(f"[JOBS_AGENT] Job submitted successfully! Job ID: {job_id}")
+            logger.info(f"[JOBS_AGENT] Firecrawl: Job submitted | ID: {job_id}")
 
         except Exception as e:
-            logger.error(f"[JOBS_AGENT] Error submitting job | error: {str(e)}", exc_info=True)
-            if hasattr(e, 'response') and e.response:
-                logger.error(f"Response Body: {e.response.text}")
+            logger.warning(f"[JOBS_AGENT] Firecrawl: Submit failed | error: {str(e)}")
             return []
 
-        # --- STEP 2: GET to poll for results (Raw API call) ---
+        # Poll with 60s hard cap (12 x 5s)
         get_url = f"https://api.firecrawl.dev/v2/extract/{job_id}"
         get_headers = {"Authorization": f"Bearer {self.firecrawl_api_key}"}
+        max_retries = 12  # 12 * 5s = 60s max
 
-        max_retries = 20  # 20 * 5s = 100s timeout
         for attempt in range(max_retries):
-            logger.info(f"[JOBS_AGENT] Polling attempt {attempt + 1}/{max_retries} | Job ID: {job_id}")
             try:
-                time.sleep(5) # Wait *before* polling (except first time, which we do)
-
+                time.sleep(5)
                 response = requests.get(get_url, headers=get_headers, timeout=10)
                 response.raise_for_status()
 
                 status_data = response.json()
                 status = status_data.get('status')
 
-                logger.info(f"[JOBS_AGENT] Current status: {status}")
+                logger.info(f"[JOBS_AGENT] Firecrawl: Poll {attempt + 1}/{max_retries} | status: {status}")
 
                 if status == 'completed':
-                    logger.info(f"[JOBS_AGENT] Job completed! | Job ID: {job_id}")
-
-                    final_data = status_data.get('data', {})
-                    jobs_data = final_data.get('jobs', [])
-
-                    if jobs_data:
-                        logger.info(f"📊 Successfully found {len(jobs_data)} jobs.")
-                    else:
-                        logger.warning("⚠️  Job completed but 'jobs' array was empty or missing.")
-
-                    # Keep jobs even if title is empty, but ensure URL exists
+                    jobs_data = status_data.get('data', {}).get('jobs', [])
                     valid_jobs = [
                         {**job, 'url': job.get('url', source_url)}
                         for job in jobs_data
-                        if job.get('url')  # Only require URL, allow empty titles
+                        if job.get('url')
                     ]
-                    logger.info(f"[JOBS_AGENT] Returning {len(valid_jobs)} valid jobs (titles may be empty).")
+                    logger.info(f"[JOBS_AGENT] Firecrawl: Complete | jobs: {len(valid_jobs)}")
                     return valid_jobs
 
-                elif status == 'failed' or status == 'cancelled':
-                    logger.error(f"[JOBS_AGENT] Job {status}. Halting. | Job ID: {job_id} | Response: {status_data}")
+                elif status in ['failed', 'cancelled']:
+                    logger.warning(f"[JOBS_AGENT] Firecrawl: Job {status}")
                     return []
 
-                # If 'processing', loop continues...
-
             except Exception as e:
-                logger.error(f"[JOBS_AGENT] Error polling job status | error: {str(e)}", exc_info=True)
-                if hasattr(e, 'response') and e.response:
-                    logger.error(f"Response Body: {e.response.text}")
-                # Continue polling even if one request fails
+                logger.warning(f"[JOBS_AGENT] Firecrawl: Poll error {attempt + 1}/{max_retries} | {str(e)}")
+                continue
 
-        logger.error(f"[JOBS_AGENT] Job timed out after 100s. | Job ID: {job_id}")
+        logger.warning(f"[JOBS_AGENT] Firecrawl: Timeout after 60s")
         return []
+
+    def _extract_jobs_tavily_fallback(self, source_url: str) -> List[Dict]:
+        """
+        Fallback: Search for hiring signals via Tavily.
+        Returns simplified job objects from web search results.
+        """
+        try:
+            logger.info(f"[JOBS_AGENT] Tavily: Searching for hiring signals")
+            query = f"careers hiring jobs available openings {source_url}"
+            results = self.tavily.invoke(query)
+
+            jobs = []
+            if results and isinstance(results, list):
+                # Convert search results to job-like objects
+                for result in results[:5]:  # Limit to top 5
+                    title = result.get('title', 'View Careers Page')
+                    url = result.get('url', source_url)
+                    jobs.append({
+                        "title": title[:100],
+                        "location": "Visit careers page",
+                        "url": url
+                    })
+
+            logger.info(f"[JOBS_AGENT] Tavily: Found {len(jobs)} hiring signals")
+            return jobs
+
+        except Exception as e:
+            logger.warning(f"[JOBS_AGENT] Tavily fallback error | {str(e)}")
+            return []

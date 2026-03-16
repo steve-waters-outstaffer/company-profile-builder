@@ -18,13 +18,11 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 // The steps we expect from the backend agent_flow.py
-// Updated to match actual backend workflow
 const WORKFLOW_STEPS = [
-  { id: 'init', label: 'Initializing research...' },
-  { id: 'build_profile', label: 'Building company profile e.g. LinkedIn' },
+  { id: 'build_profile', label: 'Building company profile' },
   { id: 'get_news', label: 'Searching recent news' },
-  { id: 'get_jobs', label: 'Looking for current job openings' },
-  { id: 'client_summary', label: 'Creating client summary' },
+  { id: 'get_jobs', label: 'Looking for job openings' },
+  { id: 'client_summary', label: 'Creating sales brief' },
 ];
 
 function App() {
@@ -33,7 +31,8 @@ function App() {
   const [urlType, setUrlType] = useState('website'); // 'website' or 'linkedin'
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
-  const [completedSteps, setCompletedSteps] = useState([]);
+  const [stepStatus, setStepStatus] = useState({});
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [reportData, setReportData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -47,7 +46,7 @@ function App() {
   useEffect(() => {
     if (!jobId) {
       setReportData(null);
-      setCompletedSteps([]);
+      setStepStatus({});
       setJobStatus(null);
       return;
     }
@@ -58,9 +57,10 @@ function App() {
       if (docSnapshot.exists()) {
         const data = docSnapshot.data();
         setJobStatus(data.status);
-        setCompletedSteps(data.steps_complete || []);
+        setStepStatus(data.step_status || {});
+        setElapsedSeconds(data.elapsed_seconds || 0);
 
-        if (data.status === 'complete') {
+        if (data.status === 'complete' || data.status === 'complete_timeout') {
           // Combine LinkedIn data with LLM-generated fields
           const combinedReport = {
             // All LinkedIn data
@@ -69,7 +69,10 @@ function App() {
             job_openings: data.job_openings || [],
             recent_news_summary: data.recent_news_summary || '',
             client_brief: data.client_brief || null,
-            data_source: data.data_source || 'linkedin'
+            data_source: data.data_source || 'linkedin',
+            step_status: data.step_status || {},
+            elapsed_seconds: data.elapsed_seconds || 0,
+            job_status: data.status
           };
           
           setReportData(combinedReport);
@@ -95,7 +98,7 @@ function App() {
     setJobId(null); // Clear old job first
     setReportData(null);
     setError(null);
-    setCompletedSteps([]);
+    setStepStatus({});
     setJobStatus('pending');
 
     try {
@@ -121,6 +124,23 @@ function App() {
   };
 
   const isLoading = jobStatus === 'pending' || jobStatus === 'running';
+
+  const getStepStatusDisplay = (stepId) => {
+    const status = stepStatus[stepId];
+    if (!status) return null;
+    
+    const icon = status.status === '✅' ? '✅' : status.status === '⚠️' ? '⚠️' : '❌';
+    let details = '';
+    
+    if (status.source) details = `(${status.source})`;
+    if (status.method) details = `(${status.method})`;
+    if (status.count !== undefined) details += ` - ${status.count} found`;
+    if (status.reason) details = `(${status.reason})`;
+    if (status.news_found === false) details = '(no news found)';
+    if (status.error) details = `- ${status.error.substring(0, 50)}...`;
+    
+    return `${icon} ${details}`;
+  };
 
   return (
     <div className="App">
@@ -187,19 +207,21 @@ function App() {
       {isLoading && (
         <div className="workflow-container">
           <h3>Working on it...</h3>
+          <div className="elapsed-time">Elapsed: {elapsedSeconds.toFixed(1)}s / 300s</div>
           
           <div className="workflow-section">
-            {WORKFLOW_STEPS.map((step, index) => {
-              const isComplete = completedSteps.includes(step.id);
-              const currentStepIndex = WORKFLOW_STEPS.findIndex(s => 
-                completedSteps.includes(s.id)
-              );
-              const isCurrent = index === currentStepIndex + 1;
+            {WORKFLOW_STEPS.map((step) => {
+              const status = stepStatus[step.id];
+              const icon = status?.status === '✅' ? '✅' : status?.status === '⚠️' ? '⚠️' : status?.status === '❌' ? '❌' : '⏳';
+              const statusText = getStepStatusDisplay(step.id);
 
               return (
-                <div key={step.id} className={`step-item ${isComplete ? 'step-complete' : ''} ${isCurrent ? 'step-current' : ''}`}>
-                  <span className="step-icon">{isComplete ? '✅' : '...'}</span>
-                  {step.label}
+                <div key={step.id} className={`step-item step-${status?.status || 'pending'}`}>
+                  <span className="step-icon">{icon}</span>
+                  <div className="step-content">
+                    <span className="step-label">{step.label}</span>
+                    {statusText && <span className="step-details">{statusText}</span>}
+                  </div>
                 </div>
               );
             })}
@@ -211,6 +233,44 @@ function App() {
 
       {reportData && (
         <div className="report">
+          {/* Status Summary */}
+          <div className="status-summary">
+            {reportData.job_status === 'complete_timeout' && (
+              <div className="timeout-warning">
+                ⏱️ Research completed but hit 5-minute timeout after {reportData.elapsed_seconds.toFixed(1)}s
+              </div>
+            )}
+            {reportData.job_status === 'complete' && (
+              <div className="completion-success">
+                ✅ Research completed in {reportData.elapsed_seconds.toFixed(1)}s
+              </div>
+            )}
+          </div>
+
+          {/* Step Status Breakdown */}
+          <div className="step-breakdown">
+            <h3>Research Steps</h3>
+            {WORKFLOW_STEPS.map((step) => {
+              const status = reportData.step_status?.[step.id];
+              if (!status) return null;
+              
+              const icon = status.status === '✅' ? '✅' : status.status === '⚠️' ? '⚠️' : '❌';
+              return (
+                <div key={step.id} className={`step-result step-${status.status}`}>
+                  <span className="step-icon">{icon}</span>
+                  <div className="step-details">
+                    <strong>{step.label}</strong>
+                    {status.source && <span> - Source: {status.source}</span>}
+                    {status.method && <span> - {status.method}</span>}
+                    {status.count !== undefined && <span> - {status.count} positions</span>}
+                    {status.reason && <span> - {status.reason}</span>}
+                    {status.error && <span style={{color: 'red'}}> - Error: {status.error}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
           {reportData.logo && (
             <div className="company-header">
               <img src={reportData.logo} alt={`${reportData.name} logo`} className="company-logo" />
