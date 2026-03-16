@@ -1,5 +1,4 @@
 import logging
-import time
 import json
 import requests
 from typing import List, Dict, Optional
@@ -17,11 +16,13 @@ class CareersURL(BaseModel):
 
 class JobsDiscoveryAgent:
     """
-    Job discovery with Firecrawl primary (60s timeout) + Tavily hiring search fallback.
+    Simple job discovery:
+    1. Find careers URL via Tavily search
+    2. Fetch HTML and ask Gemini to extract jobs
+    No Firecrawl, no complex fallbacks.
     """
 
-    def __init__(self, firecrawl_api_key: str = config.FIRECRAWL_API_KEY, tavily_api_key: str = config.TAVILY_API_KEY):
-        self.firecrawl_api_key = firecrawl_api_key
+    def __init__(self, tavily_api_key: str = config.TAVILY_API_KEY):
         self.tavily_api_key = tavily_api_key
         self.llm = ChatGoogleGenerativeAI(model=config.GEMINI_MODEL_NAME)
         self.tavily = TavilySearch(max_results=5, api_key=tavily_api_key)
@@ -38,199 +39,107 @@ class JobsDiscoveryAgent:
                 logger.warning(f"[JOBS_AGENT] No careers page found | company: '{company_name}'")
                 return {"job_listings": [], "error": "No careers page found", "source": "none"}
 
-            # 2. Extract jobs
-            logger.info(f"[JOBS_AGENT] Extracting jobs | company: '{company_name}' | careers_url: {careers_url}")
-            jobs = self._extract_jobs(careers_url)
-            logger.info(f"[JOBS_AGENT] SUCCESS - Jobs extracted | company: '{company_name}' | count: {len(jobs)}")
+            # 2. Extract jobs via Gemini
+            logger.info(f"[JOBS_AGENT] Extracting jobs from {careers_url}")
+            jobs = self._extract_jobs_gemini(careers_url)
+            logger.info(f"[JOBS_AGENT] SUCCESS | company: '{company_name}' | jobs_found: {len(jobs)}")
 
-            return {"job_listings": jobs, "careers_url": careers_url, "source": "firecrawl" if jobs else "tavily_fallback"}
+            return {
+                "job_listings": jobs,
+                "careers_url": careers_url,
+                "source": "gemini" if jobs else "error"
+            }
 
         except Exception as e:
             logger.error(f"[JOBS_AGENT] ERROR | company: '{company_name}' | error: {str(e)}", exc_info=True)
             return {"job_listings": [], "error": str(e), "source": "error"}
 
     def _find_careers_page(self, company_name: str, company_url: Optional[str], location: Optional[str] = None) -> Optional[str]:
-        logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}' | location: '{location}'")
+        """Find careers URL using Tavily + LLM selection."""
+        logger.info(f"[JOBS_AGENT] Finding careers page | company: '{company_name}'")
 
-        query = f"{company_name} official careers page job openings listings"
-        
+        query = f"{company_name} official careers page job openings"
         if location:
             query += f" {location}"
 
         try:
-            logger.info(f"[JOBS_AGENT] Tavily search starting | query: '{query}'")
+            logger.info(f"[JOBS_AGENT] Tavily search | query: '{query}'")
             results = self.tavily.invoke(query)
-            logger.info(f"[JOBS_AGENT] Tavily search complete | results: {len(results) if isinstance(results, list) else 'N/A'}")
 
-            prompt = f"""You are an expert recruiter finding the direct link to apply for jobs at {company_name}.
-            Analyze the search results and select the BEST URL that directly lists currently open positions.
+            prompt = f"""You are an expert recruiter finding the direct careers page URL for {company_name}.
+            Select the BEST URL that directly lists open positions.
 
-            Follow this PRIORITY order for selection:
-            1. A dedicated careers subdomain (e.g., jobs.outstaffer.com, careers.company.com).
-            2. A direct ATS link used by the company (e.g., greenhouse.io/company, lever.co/company).
-            3. A clear careers path on their main site (e.g., company.com/careers, company.com/jobs).
-            4. A LinkedIn page ONLY IF it specifically ends in '/jobs/' (avoid generic company profiles).
+            Priority:
+            1. careers.company.com or jobs.company.com (dedicated careers domain)
+            2. company.com/careers or company.com/jobs (careers on main site)
+            3. ATS platform (greenhouse.io, lever.co, etc)
+            4. LinkedIn /jobs/ page ONLY
 
-            STRICT NEGATIVE RULES (Do NOT select these):
-            - Do NOT select the company homepage (e.g., outstaffer.com/).
-            - Do NOT select 'About Us', 'Contact', or 'Team' pages unless NO other option exists.
-            - Do NOT select blog posts or press releases.
+            DO NOT select: homepage, about pages, blog posts, or generic profiles.
 
-            Search results: {results}
+            Results: {results}
 
-            Return the single best URL and your reasoning based on the priority above."""
+            Return the single best URL."""
 
             structured_llm = self.llm.with_structured_output(CareersURL)
             result = structured_llm.invoke(prompt)
 
-            logger.info(f"[JOBS_AGENT] LLM selection | url: {result.url}")
-
             if result.url and result.url.startswith('http'):
+                logger.info(f"[JOBS_AGENT] Found careers URL | url: {result.url}")
                 return result.url
             else:
-                logger.warning(f"[JOBS_AGENT] No valid careers URL found")
+                logger.warning(f"[JOBS_AGENT] Invalid URL from LLM")
                 return None
+
         except Exception as e:
-            logger.error(f"[JOBS_AGENT] Error finding careers page | error: {str(e)}")
+            logger.error(f"[JOBS_AGENT] Error finding careers page | {str(e)}")
             return None
 
-    def _extract_jobs(self, source_url: str) -> List[Dict]:
+    def _extract_jobs_gemini(self, careers_url: str) -> List[Dict]:
         """
-        Extracts jobs using Firecrawl with 60s hard timeout.
-        Falls back to Tavily hiring search if Firecrawl fails or times out.
+        Fetch careers page HTML and ask Gemini to extract job listings.
+        Returns structured job data.
         """
-        logger.info(f"[JOBS_AGENT] Starting job extraction | url: {source_url}")
-
-        # Try Firecrawl first (faster, structured)
-        jobs = self._extract_jobs_firecrawl(source_url)
-        if jobs:
-            logger.info(f"[JOBS_AGENT] Firecrawl succeeded | jobs found: {len(jobs)}")
-            return jobs
-
-        # Fallback to Tavily hiring search
-        logger.warning(f"[JOBS_AGENT] Firecrawl failed/timed out, trying Tavily fallback")
-        jobs = self._extract_jobs_tavily_fallback(source_url)
-        logger.info(f"[JOBS_AGENT] Tavily fallback complete | jobs found: {len(jobs)}")
-        return jobs
-
-    def _extract_jobs_firecrawl(self, source_url: str) -> List[Dict]:
-        """
-        Firecrawl extraction with 60s hard timeout (12 retries x 5s).
-        Returns empty list on timeout or error (triggers fallback).
-        """
-        schema = {
-            "type": "object",
-            "properties": {
-                "jobs": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "location": {"type": "string"},
-                            "url": {"type": "string"}
-                        },
-                        "required": ["title", "location"]
-                    }
-                }
-            },
-            "required": ["jobs"]
-        }
-
-        prompt = "Extract all jobs. For each job: 'title' is the role name like 'Accountant' or 'Billing Manager', 'location' is where the job is based, 'url' is the apply link."
-
-        post_url = "https://api.firecrawl.dev/v2/extract"
-        headers = {
-            "Authorization": f"Bearer {self.firecrawl_api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "urls": [source_url],
-            "prompt": prompt,
-            "schema": schema
-        }
-
-        job_id = None
         try:
-            logger.info(f"[JOBS_AGENT] Firecrawl: Submitting job")
-            response = requests.post(post_url, headers=headers, data=json.dumps(payload), timeout=10)
+            # 1. Fetch the page
+            logger.info(f"[JOBS_AGENT] Fetching {careers_url}")
+            response = requests.get(careers_url, timeout=15)
             response.raise_for_status()
+            html = response.text[:150000]  # Limit to first 150k chars
+            logger.info(f"[JOBS_AGENT] Fetched {len(html)} chars from {careers_url}")
 
-            post_data = response.json()
-            job_id = post_data.get('id')
+            # 2. Ask Gemini to extract jobs
+            prompt = f"""Extract ALL job openings from this careers page HTML.
+            
+Return ONLY valid JSON (no markdown, no preamble):
+{{"jobs": [{{"title": "Job Title", "location": "Location", "url": "Apply URL"}}]}}
 
-            if not job_id:
-                logger.warning(f"[JOBS_AGENT] Firecrawl: No job ID in response")
+If you cannot find specific URLs, use the main careers page URL.
+Return an empty jobs array if no positions are found.
+
+HTML:
+{html}"""
+
+            logger.info(f"[JOBS_AGENT] Asking Gemini to extract jobs")
+            result = self.llm.invoke(prompt)
+            
+            # Parse JSON from response
+            try:
+                # Try to extract JSON from the response
+                content = result.content if hasattr(result, 'content') else str(result)
+                # Remove markdown code blocks if present
+                content = content.replace('```json', '').replace('```', '').strip()
+                parsed = json.loads(content)
+                jobs = parsed.get('jobs', [])
+                logger.info(f"[JOBS_AGENT] Extracted {len(jobs)} jobs from Gemini")
+                return jobs
+            except json.JSONDecodeError as je:
+                logger.error(f"[JOBS_AGENT] Failed to parse Gemini response | error: {str(je)} | content: {content[:200]}")
                 return []
 
-            logger.info(f"[JOBS_AGENT] Firecrawl: Job submitted | ID: {job_id}")
-
-        except Exception as e:
-            logger.warning(f"[JOBS_AGENT] Firecrawl: Submit failed | error: {str(e)}")
+        except requests.RequestException as e:
+            logger.error(f"[JOBS_AGENT] Failed to fetch {careers_url} | {str(e)}")
             return []
-
-        # Poll with 60s hard cap (12 x 5s)
-        get_url = f"https://api.firecrawl.dev/v2/extract/{job_id}"
-        get_headers = {"Authorization": f"Bearer {self.firecrawl_api_key}"}
-        max_retries = 12  # 12 * 5s = 60s max
-
-        for attempt in range(max_retries):
-            try:
-                time.sleep(5)
-                response = requests.get(get_url, headers=get_headers, timeout=10)
-                response.raise_for_status()
-
-                status_data = response.json()
-                status = status_data.get('status')
-
-                logger.info(f"[JOBS_AGENT] Firecrawl: Poll {attempt + 1}/{max_retries} | status: {status}")
-
-                if status == 'completed':
-                    jobs_data = status_data.get('data', {}).get('jobs', [])
-                    valid_jobs = [
-                        {**job, 'url': job.get('url', source_url)}
-                        for job in jobs_data
-                        if job.get('url')
-                    ]
-                    logger.info(f"[JOBS_AGENT] Firecrawl: Complete | jobs: {len(valid_jobs)}")
-                    return valid_jobs
-
-                elif status in ['failed', 'cancelled']:
-                    logger.warning(f"[JOBS_AGENT] Firecrawl: Job {status}")
-                    return []
-
-            except Exception as e:
-                logger.warning(f"[JOBS_AGENT] Firecrawl: Poll error {attempt + 1}/{max_retries} | {str(e)}")
-                continue
-
-        logger.warning(f"[JOBS_AGENT] Firecrawl: Timeout after 60s")
-        return []
-
-    def _extract_jobs_tavily_fallback(self, source_url: str) -> List[Dict]:
-        """
-        Fallback: Search for hiring signals via Tavily.
-        Returns simplified job objects from web search results.
-        """
-        try:
-            logger.info(f"[JOBS_AGENT] Tavily: Searching for hiring signals")
-            query = f"careers hiring jobs available openings {source_url}"
-            results = self.tavily.invoke(query)
-
-            jobs = []
-            if results and isinstance(results, list):
-                # Convert search results to job-like objects
-                for result in results[:5]:  # Limit to top 5
-                    title = result.get('title', 'View Careers Page')
-                    url = result.get('url', source_url)
-                    jobs.append({
-                        "title": title[:100],
-                        "location": "Visit careers page",
-                        "url": url
-                    })
-
-            logger.info(f"[JOBS_AGENT] Tavily: Found {len(jobs)} hiring signals")
-            return jobs
-
         except Exception as e:
-            logger.warning(f"[JOBS_AGENT] Tavily fallback error | {str(e)}")
+            logger.error(f"[JOBS_AGENT] Error extracting jobs | {str(e)}", exc_info=True)
             return []
